@@ -7,6 +7,7 @@
 A TUI for planning and running claude code on a autonmous loop based on the
 [Ralph Wiggem](https://ghuntley.com/ralph/) technique.
 
+![task-demo](./task-demo.gif)
 ![ralph-wiggem](https://media1.tenor.com/m/u1_XOvKApKgAAAAC/ralph-wiggum.gif)
 
 ## What Ralph Can Do
