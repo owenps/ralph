@@ -31,19 +31,18 @@ scope of the current work.
 
 ## Installation
 
-Smooth installation is still work in progress. For now pull down the repo and build
-the executable.
+Smooth installation with Homebrew is still work in progress. For now fetch the
+latest.
 
 ```sh
-go build
-./ralph
+go install github.com/owenps/ralph@latest
 ```
 
-Once you've setup the global config, you can navigate to any other directory with
-Ralph and run initialize the project level config.
+Be sure `~/go/bin` is in your PATH. Then in any project initialize Ralph.
 
 ```sh
-./ralph init
+ralph init
+ralph
 ```
 
 ## Data
