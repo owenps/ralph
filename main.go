@@ -20,7 +20,7 @@ func main() {
 			printHelp()
 			return
 		case "version", "--version", "-v":
-			fmt.Println("ralph v0.1.0")
+			fmt.Println("ralph " + ui.Version)
 			return
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])

@@ -6,6 +6,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Version can be set via ldflags at build time
+var Version = "v0.1.0"
+
 var (
 	colorYellow     = lipgloss.AdaptiveColor{Light: "#B8860B", Dark: "#FFD93D"}
 	colorDarkYellow = lipgloss.AdaptiveColor{Light: "#806000", Dark: "#B8960C"}
@@ -140,7 +143,6 @@ func banner() string {
 	}
 
 	// Column positions for white highlights (vertical stems in each letter)
-	// R: col 2, A: cols 15 & 19, L: col 26, P: col 36, H: cols 48 & 53
 	highlightCols := map[int]bool{
 		2: true, 15: true, 25: true, 34: true, 45: true,
 	}
@@ -165,5 +167,5 @@ func banner() string {
 		}
 	}
 
-	return result.String()
+	return borderStyle.Padding(1).Render(result.String())
 }
