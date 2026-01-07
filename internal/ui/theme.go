@@ -105,6 +105,11 @@ var (
 			Foreground(colorDarkYellow).
 			Bold(true)
 
+	warnBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorBug).
+			Padding(1, 2)
+
 	successStyle = lipgloss.NewStyle().
 			Foreground(colorFeature).
 			Bold(true)

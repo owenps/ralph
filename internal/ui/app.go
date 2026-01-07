@@ -43,6 +43,7 @@ type App struct {
 	loopRunner    *internal.LoopRunner
 	lastQuitPress time.Time
 	err           error
+	warnErr       error
 	width         int
 	height        int
 }
@@ -130,6 +131,13 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Handle dismissable warning - any key returns to manage tasks
+		if m.warnErr != nil {
+			m.warnErr = nil
+			m.state = stateView
+			return m, nil
+		}
+
 		// States with text input only respond to ctrl+c (not 'q')
 		if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
 			if key.Matches(msg, appKeys.QuitCtrlC) {
@@ -265,7 +273,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runSelectedTasksMsg:
 		// Check for uncommitted changes
 		if err := internal.CheckWorkingDirectoryClean(); err != nil {
-			m.err = err
+			m.warnErr = err
 			return m, nil
 		}
 		// Go to loop config
@@ -280,7 +288,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case startLoopMsg:
 		runner, err := internal.NewLoopRunner(m.globalConfig, m.store.All(), msg.TaskIDs, m.store, msg.MaxIterations)
 		if err != nil {
-			m.err = err
+			m.warnErr = err
 			return m, nil
 		}
 		m.loopRunner = runner
@@ -396,6 +404,11 @@ func (m App) startLoop() tea.Msg {
 func (m App) View() string {
 	if m.err != nil {
 		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPlease fix the issue and restart Ralph.", m.err))
+	}
+
+	if m.warnErr != nil {
+		content := errorStyle.Render(fmt.Sprintf("Error: %v", m.warnErr)) + "\n\n" + helpDescStyle.Render("Press any key to continue")
+		return warnBorderStyle.Render(content)
 	}
 
 	switch m.state {
