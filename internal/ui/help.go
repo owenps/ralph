@@ -48,10 +48,12 @@ var (
 
 	viewHelpKeys = []keyBinding{
 		{Key: "j/k", Desc: "navigate"},
-		{Key: "space", Desc: "toggle"},
+		{Key: "space", Desc: "toggle done"},
+		{Key: "s", Desc: "select"},
+		{Key: "r", Desc: "run"},
 		{Key: "d", Desc: "delete"},
 		{Key: "tab", Desc: "filter"},
-		{Key: "esc", Desc: "menu"},
+		{Key: "esc", Desc: "back"},
 		{Key: "q", Desc: "quit"},
 	}
 

@@ -32,18 +32,25 @@ type viewModel struct {
 	height          int
 	lastDeletePress time.Time
 	deleteConfirmID string
+	selected        map[string]bool
+	showRunWarn     bool
+	showSelectWarn  bool
 }
 
 type backToMenuMsg struct{}
 type deleteTaskMsg struct{ ID string }
 type toggleTaskMsg struct{ ID string }
 type clearDeletePromptMsg struct{}
+type clearRunWarnMsg struct{}
+type clearSelectWarnMsg struct{}
+type runSelectedTasksMsg struct{ TaskIDs []string }
 
 func newViewTasks(tasks []internal.Task) viewModel {
 	m := viewModel{
-		tasks:  tasks,
-		cursor: 0,
-		filter: filterAll,
+		tasks:    tasks,
+		cursor:   0,
+		filter:   filterAll,
+		selected: make(map[string]bool),
 	}
 	m.applyFilter()
 	return m
@@ -95,6 +102,14 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 		m.deleteConfirmID = ""
 		return m, nil
 
+	case clearRunWarnMsg:
+		m.showRunWarn = false
+		return m, nil
+
+	case clearSelectWarnMsg:
+		m.showSelectWarn = false
+		return m, nil
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, vKeys.Quit):
@@ -105,6 +120,10 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 				m.deleteConfirmID = ""
 				return m, nil
 			}
+			if len(m.selected) > 0 {
+				m.selected = make(map[string]bool)
+				return m, nil
+			}
 			return m, func() tea.Msg { return backToMenuMsg{} }
 		case key.Matches(msg, vKeys.Up):
 			if m.cursor > 0 {
@@ -112,17 +131,23 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 			}
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
+			m.showRunWarn = false
+			m.showSelectWarn = false
 		case key.Matches(msg, vKeys.Down):
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 			}
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
+			m.showRunWarn = false
+			m.showSelectWarn = false
 		case key.Matches(msg, vKeys.Tab):
 			m.filter = (m.filter + 1) % 5
 			m.applyFilter()
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
+			m.showRunWarn = false
+			m.showSelectWarn = false
 		case key.Matches(msg, vKeys.Toggle):
 			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
 				task := m.filtered[m.cursor]
@@ -143,6 +168,33 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 					return clearDeletePromptMsg{}
 				})
 			}
+		case key.Matches(msg, vKeys.Select):
+			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+				task := m.filtered[m.cursor]
+				if task.Done {
+					m.showSelectWarn = true
+					return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
+						return clearSelectWarnMsg{}
+					})
+				}
+				if m.selected[task.ID] {
+					delete(m.selected, task.ID)
+				} else {
+					m.selected[task.ID] = true
+				}
+			}
+		case key.Matches(msg, vKeys.Run):
+			if len(m.selected) > 0 {
+				var taskIDs []string
+				for id := range m.selected {
+					taskIDs = append(taskIDs, id)
+				}
+				return m, func() tea.Msg { return runSelectedTasksMsg{TaskIDs: taskIDs} }
+			}
+			m.showRunWarn = true
+			return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
+				return clearRunWarnMsg{}
+			})
 		}
 	}
 
@@ -150,7 +202,13 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 }
 
 func (m viewModel) View() string {
-	s := m.renderTabs() + "\n\n"
+	s := m.renderTabs()
+
+	if len(m.selected) > 0 {
+		s += "  " + successStyle.Render(fmt.Sprintf("%d selected", len(m.selected)))
+	}
+
+	s += "\n\n"
 
 	if len(m.filtered) == 0 {
 		s += m.renderEmpty()
@@ -161,6 +219,12 @@ func (m viewModel) View() string {
 	s += "\n"
 	if !m.lastDeletePress.IsZero() {
 		s += warnStyle.Render("Press d again to delete") + "\n"
+	}
+	if m.showRunWarn {
+		s += warnStyle.Render("No tasks selected") + "\n"
+	}
+	if m.showSelectWarn {
+		s += warnStyle.Render("Cannot select completed task") + "\n"
 	}
 	s += renderHelp(viewHelpKeys)
 
@@ -200,7 +264,7 @@ func (m viewModel) renderSplitView() string {
 	if totalWidth < 60 {
 		totalWidth = 80
 	}
-	listWidth := totalWidth / 3
+	listWidth := totalWidth * 2 / 5
 	detailWidth := totalWidth - listWidth - 5
 
 	listContent := m.renderTaskList(listWidth)
@@ -228,15 +292,21 @@ func (m viewModel) renderTaskList(width int) string {
 			style = selectedMenuItemStyle
 		}
 
+		// Selection indicator
+		selectMark := "  "
+		if m.selected[t.ID] {
+			selectMark = successStyle.Render("● ")
+		}
+
 		badge := categoryBadge(string(t.Category))
-		desc := truncate(t.Description, width-15)
+		desc := truncate(t.Description, width-18)
 
 		doneMarker := ""
 		if t.Done {
 			doneMarker = successStyle.Render(" ✔︎")
 		}
 
-		line := cursor + badge.Render(string(t.Category)[:3]) + " " + style.Render(desc) + doneMarker
+		line := cursor + selectMark + badge.Render(string(t.Category)[:3]) + " " + style.Render(desc) + doneMarker
 		lines = append(lines, line)
 	}
 
@@ -327,6 +397,8 @@ type viewKeyMap struct {
 	Quit   key.Binding
 	Delete key.Binding
 	Toggle key.Binding
+	Select key.Binding
+	Run    key.Binding
 }
 
 var vKeys = viewKeyMap{
@@ -350,5 +422,11 @@ var vKeys = viewKeyMap{
 	),
 	Toggle: key.NewBinding(
 		key.WithKeys(" ", "enter"),
+	),
+	Select: key.NewBinding(
+		key.WithKeys("s"),
+	),
+	Run: key.NewBinding(
+		key.WithKeys("r"),
 	),
 }

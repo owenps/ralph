@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -22,16 +23,24 @@ const (
 	stateMenu
 	stateCreate
 	stateView
+	stateSettings
+	stateLoopConfig
+	stateLoopRunning
 )
 
 type App struct {
 	state         appState
 	forceInit     bool
 	store         *internal.TaskStore
+	globalConfig  *internal.GlobalConfig
 	setupWizard   setupModel
 	menu          menuModel
 	createWizard  createModel
 	viewTasks     viewModel
+	settingsView  settingsModel
+	loopConfig    loopConfigModel
+	loopView      loopViewModel
+	loopRunner    *internal.LoopRunner
 	lastQuitPress time.Time
 	err           error
 	width         int
@@ -51,7 +60,8 @@ func NewAppForInit() App {
 func newAppWithOptions(forceInit bool) App {
 	menuItems := []menuItem{
 		{Name: "Create Task", Description: "Create a new backlog task"},
-		{Name: "View Tasks", Description: "View and filter existing tasks"},
+		{Name: "Manage Tasks", Description: "View, manage, and run tasks"},
+		{Name: "Settings", Description: "Configure Ralph settings"},
 	}
 
 	return App{
@@ -121,7 +131,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// States with text input only respond to ctrl+c (not 'q')
-		if m.state == stateSetup || m.state == stateCreate {
+		if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
 			if key.Matches(msg, appKeys.QuitCtrlC) {
 				now := time.Now()
 				if !m.lastQuitPress.IsZero() && now.Sub(m.lastQuitPress) < quitConfirmWindow {
@@ -180,6 +190,12 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store = internal.NewTaskStore(tasksPath)
 		m.store.Load()
 		m.viewTasks = newViewTasks(msg.tasks)
+		// Load global config
+		cfg, err := internal.LoadGlobalConfig()
+		if err != nil {
+			cfg = internal.DefaultGlobalConfig()
+		}
+		m.globalConfig = cfg
 		m.state = stateMenu
 		return m, nil
 
@@ -196,6 +212,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.viewTasks.SetTasks(m.store.All())
 			m.state = stateView
+			return m, nil
+		case 2:
+			m.settingsView = newSettingsView(m.globalConfig)
+			m.state = stateSettings
 			return m, nil
 		}
 
@@ -233,6 +253,58 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewTasks.SetTasks(m.store.All())
 		return m, nil
+
+	case backFromSettingsMsg:
+		m.state = stateMenu
+		return m, nil
+
+	case settingsSavedMsg:
+		// Settings saved, stay in settings view
+		return m, nil
+
+	case runSelectedTasksMsg:
+		// Check for uncommitted changes
+		if err := internal.CheckWorkingDirectoryClean(); err != nil {
+			m.err = err
+			return m, nil
+		}
+		// Go to loop config
+		m.loopConfig = newLoopConfig(msg.TaskIDs, m.store.All(), m.globalConfig.Loop.DefaultMaxIterations)
+		m.state = stateLoopConfig
+		return m, nil
+
+	case cancelLoopConfigMsg:
+		m.state = stateView
+		return m, nil
+
+	case startLoopMsg:
+		runner, err := internal.NewLoopRunner(m.globalConfig, m.store.All(), msg.TaskIDs, m.store, msg.MaxIterations)
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.loopRunner = runner
+		m.loopView = newLoopView(runner)
+		m.state = stateLoopRunning
+
+		// Start the loop in background
+		return m, m.startLoop
+
+	case loopOutputMsg:
+		m.loopView, _ = m.loopView.Update(msg)
+		return m, nil
+
+	case loopCompleteMsg:
+		// Refresh tasks
+		m.store.Load()
+		m.viewTasks.SetTasks(m.store.All())
+		// Clear selections
+		m.viewTasks.selected = make(map[string]bool)
+		return m, nil
+
+	case hideLoopViewMsg:
+		m.state = stateView
+		return m, nil
 	}
 
 	switch m.state {
@@ -244,6 +316,12 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCreate(msg)
 	case stateView:
 		return m.updateView(msg)
+	case stateSettings:
+		return m.updateSettings(msg)
+	case stateLoopConfig:
+		return m.updateLoopConfig(msg)
+	case stateLoopRunning:
+		return m.updateLoopView(msg)
 	}
 
 	return m, nil
@@ -273,6 +351,48 @@ func (m App) updateView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.settingsView, cmd = m.settingsView.Update(msg)
+	return m, cmd
+}
+
+func (m App) updateLoopConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.loopConfig, cmd = m.loopConfig.Update(msg)
+	return m, cmd
+}
+
+func (m App) updateLoopView(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.loopView, cmd = m.loopView.Update(msg)
+	return m, cmd
+}
+
+func (m App) startLoop() tea.Msg {
+	outputChan := make(chan string, 100)
+
+	go func() {
+		ctx := context.Background()
+		err := m.loopRunner.Run(ctx, outputChan)
+		close(outputChan)
+		if err != nil {
+			// Error is already logged in progress
+		}
+	}()
+
+	// Start reading output in another goroutine
+	go func() {
+		for output := range outputChan {
+			// We can't send messages from here directly
+			// The loop view polls state instead
+			_ = output
+		}
+	}()
+
+	return loopCompleteMsg{}
+}
+
 func (m App) View() string {
 	if m.err != nil {
 		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPlease fix the issue and restart Ralph.", m.err))
@@ -299,6 +419,12 @@ func (m App) View() string {
 		return s
 	case stateView:
 		return m.viewTasks.View()
+	case stateSettings:
+		return m.settingsView.View()
+	case stateLoopConfig:
+		return m.loopConfig.View()
+	case stateLoopRunning:
+		return m.loopView.View()
 	}
 
 	return ""

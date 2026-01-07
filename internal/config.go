@@ -20,10 +20,37 @@ var (
 	ErrProjectNotFound      = errors.New("project not initialized")
 )
 
+// LoopConfig stores settings for the Ralph loop execution
+type LoopConfig struct {
+	DefaultMaxIterations int `yaml:"default_max_iterations"`
+}
+
+// ClaudeConfig stores settings for Claude CLI invocation
+type ClaudeConfig struct {
+	Model          string   `yaml:"model,omitempty"`
+	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
+	MaxTurns       int      `yaml:"max_turns,omitempty"`
+	TimeoutSeconds int      `yaml:"timeout_seconds,omitempty"`
+}
+
 // GlobalConfig stores user preferences (in ~/.config/ralph/config.yaml)
 type GlobalConfig struct {
-	// Future: theme, default settings, etc.
-	Initialized bool `yaml:"initialized"`
+	Initialized bool         `yaml:"initialized"`
+	Loop        LoopConfig   `yaml:"loop"`
+	Claude      ClaudeConfig `yaml:"claude"`
+}
+
+// DefaultGlobalConfig returns a GlobalConfig with sensible defaults
+func DefaultGlobalConfig() *GlobalConfig {
+	return &GlobalConfig{
+		Initialized: true,
+		Loop: LoopConfig{
+			DefaultMaxIterations: 10,
+		},
+		Claude: ClaudeConfig{
+			TimeoutSeconds: 300,
+		},
+	}
 }
 
 // GlobalConfigPath returns the path to the global config file
@@ -50,12 +77,21 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 		return nil, err
 	}
 
-	var cfg GlobalConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Start with defaults, then overlay loaded config
+	cfg := DefaultGlobalConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
 
-	return &cfg, nil
+	// Ensure defaults for zero values
+	if cfg.Loop.DefaultMaxIterations == 0 {
+		cfg.Loop.DefaultMaxIterations = 10
+	}
+	if cfg.Claude.TimeoutSeconds == 0 {
+		cfg.Claude.TimeoutSeconds = 300
+	}
+
+	return cfg, nil
 }
 
 // SaveGlobalConfig saves the global config to ~/.config/ralph/config.yaml
