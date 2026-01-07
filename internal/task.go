@@ -112,6 +112,26 @@ func (s *TaskStore) Count() int {
 	return len(s.tasks)
 }
 
+func (s *TaskStore) Delete(id string) bool {
+	for i, t := range s.tasks {
+		if t.ID == id {
+			s.tasks = append(s.tasks[:i], s.tasks[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TaskStore) ToggleDone(id string) bool {
+	for i, t := range s.tasks {
+		if t.ID == id {
+			s.tasks[i].Done = !t.Done
+			return true
+		}
+	}
+	return false
+}
+
 func (s *TaskStore) CreateEmptyFile() error {
 	return os.WriteFile(s.filepath, []byte("[]\n"), 0644)
 }

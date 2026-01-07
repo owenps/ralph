@@ -215,6 +215,24 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case backToMenuMsg:
 		m.state = stateMenu
 		return m, nil
+
+	case deleteTaskMsg:
+		m.store.Delete(msg.ID)
+		if err := m.store.Save(); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+		m.viewTasks.SetTasks(m.store.All())
+		return m, nil
+
+	case toggleTaskMsg:
+		m.store.ToggleDone(msg.ID)
+		if err := m.store.Save(); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+		m.viewTasks.SetTasks(m.store.All())
+		return m, nil
 	}
 
 	switch m.state {

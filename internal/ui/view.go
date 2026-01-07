@@ -3,12 +3,15 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/owenps/ralph/internal"
 )
+
+const deleteConfirmWindow = 2 * time.Second
 
 type filterType int
 
@@ -21,15 +24,20 @@ const (
 )
 
 type viewModel struct {
-	tasks    []internal.Task
-	filtered []internal.Task
-	cursor   int
-	filter   filterType
-	width    int
-	height   int
+	tasks           []internal.Task
+	filtered        []internal.Task
+	cursor          int
+	filter          filterType
+	width           int
+	height          int
+	lastDeletePress time.Time
+	deleteConfirmID string
 }
 
 type backToMenuMsg struct{}
+type deleteTaskMsg struct{ ID string }
+type toggleTaskMsg struct{ ID string }
+type clearDeletePromptMsg struct{}
 
 func newViewTasks(tasks []internal.Task) viewModel {
 	m := viewModel{
@@ -82,23 +90,59 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case clearDeletePromptMsg:
+		m.lastDeletePress = time.Time{}
+		m.deleteConfirmID = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, vKeys.Quit):
 			return m, tea.Quit
 		case key.Matches(msg, vKeys.Escape):
+			if !m.lastDeletePress.IsZero() {
+				m.lastDeletePress = time.Time{}
+				m.deleteConfirmID = ""
+				return m, nil
+			}
 			return m, func() tea.Msg { return backToMenuMsg{} }
 		case key.Matches(msg, vKeys.Up):
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			m.lastDeletePress = time.Time{}
+			m.deleteConfirmID = ""
 		case key.Matches(msg, vKeys.Down):
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 			}
+			m.lastDeletePress = time.Time{}
+			m.deleteConfirmID = ""
 		case key.Matches(msg, vKeys.Tab):
 			m.filter = (m.filter + 1) % 5
 			m.applyFilter()
+			m.lastDeletePress = time.Time{}
+			m.deleteConfirmID = ""
+		case key.Matches(msg, vKeys.Toggle):
+			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+				task := m.filtered[m.cursor]
+				return m, func() tea.Msg { return toggleTaskMsg{ID: task.ID} }
+			}
+		case key.Matches(msg, vKeys.Delete):
+			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
+				task := m.filtered[m.cursor]
+				now := time.Now()
+				if !m.lastDeletePress.IsZero() && m.deleteConfirmID == task.ID && now.Sub(m.lastDeletePress) < deleteConfirmWindow {
+					m.lastDeletePress = time.Time{}
+					m.deleteConfirmID = ""
+					return m, func() tea.Msg { return deleteTaskMsg{ID: task.ID} }
+				}
+				m.lastDeletePress = now
+				m.deleteConfirmID = task.ID
+				return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
+					return clearDeletePromptMsg{}
+				})
+			}
 		}
 	}
 
@@ -115,6 +159,9 @@ func (m viewModel) View() string {
 	}
 
 	s += "\n"
+	if !m.lastDeletePress.IsZero() {
+		s += warnStyle.Render("Press d again to delete") + "\n"
+	}
 	s += renderHelp(viewHelpKeys)
 
 	return s
@@ -145,7 +192,7 @@ func (m viewModel) renderTabs() string {
 }
 
 func (m viewModel) renderEmpty() string {
-	return helpDescStyle.Render("No tasks yet. Enjoy the calm.")
+	return helpDescStyle.Render("No tasks yet. Enjoy the peace.")
 }
 
 func (m viewModel) renderSplitView() string {
@@ -278,6 +325,8 @@ type viewKeyMap struct {
 	Tab    key.Binding
 	Escape key.Binding
 	Quit   key.Binding
+	Delete key.Binding
+	Toggle key.Binding
 }
 
 var vKeys = viewKeyMap{
@@ -295,5 +344,11 @@ var vKeys = viewKeyMap{
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
+	),
+	Delete: key.NewBinding(
+		key.WithKeys("d"),
+	),
+	Toggle: key.NewBinding(
+		key.WithKeys(" ", "enter"),
 	),
 }
