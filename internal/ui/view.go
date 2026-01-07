@@ -17,6 +17,7 @@ const (
 	filterBug
 	filterFeature
 	filterRefactor
+	filterResearch
 )
 
 type viewModel struct {
@@ -55,6 +56,8 @@ func (m *viewModel) applyFilter() {
 		m.filtered = filterByCategory(m.tasks, internal.CategoryFeature)
 	case filterRefactor:
 		m.filtered = filterByCategory(m.tasks, internal.CategoryRefactor)
+	case filterResearch:
+		m.filtered = filterByCategory(m.tasks, internal.CategoryResearch)
 	}
 
 	if m.cursor >= len(m.filtered) {
@@ -94,7 +97,7 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 				m.cursor++
 			}
 		case key.Matches(msg, vKeys.Tab):
-			m.filter = (m.filter + 1) % 4
+			m.filter = (m.filter + 1) % 5
 			m.applyFilter()
 		}
 	}
@@ -126,6 +129,7 @@ func (m viewModel) renderTabs() string {
 		{"bug", filterBug},
 		{"feature", filterFeature},
 		{"refactor", filterRefactor},
+		{"research", filterResearch},
 	}
 
 	var tabViews []string

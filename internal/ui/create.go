@@ -287,6 +287,8 @@ func catDescription(cat internal.Category) string {
 		return "New feature"
 	case internal.CategoryRefactor:
 		return "Code refactoring"
+	case internal.CategoryResearch:
+		return "Research"
 	default:
 		return ""
 	}

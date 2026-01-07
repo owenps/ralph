@@ -14,9 +14,10 @@ const (
 	CategoryBug      Category = "bug"
 	CategoryFeature  Category = "feature"
 	CategoryRefactor Category = "refactor"
+	CategoryResearch Category = "research"
 )
 
-var Categories = []Category{CategoryBug, CategoryFeature, CategoryRefactor}
+var Categories = []Category{CategoryBug, CategoryFeature, CategoryRefactor, CategoryResearch}
 
 func (c Category) String() string {
 	return string(c)

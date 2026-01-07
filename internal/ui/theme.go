@@ -20,6 +20,7 @@ var (
 	colorBug        = lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#FF6B6B"}
 	colorFeature    = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#2A9D8F"}
 	colorRefactor   = lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}
+	colorResearch   = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"}
 )
 
 var (
@@ -87,6 +88,11 @@ var (
 			Background(colorRefactor).
 			Padding(0, 1)
 
+	researchBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorResearch).
+			Padding(0, 1)
+
 	inputLabelStyle = lipgloss.NewStyle().
 			Foreground(colorYellow).
 			Bold(true)
@@ -128,6 +134,8 @@ func categoryBadge(category string) lipgloss.Style {
 		return featureBadge
 	case "refactor":
 		return refactorBadge
+	case "research":
+		return researchBadge
 	default:
 		return inactiveTabStyle
 	}
