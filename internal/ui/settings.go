@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,6 +21,7 @@ const (
 	fieldAllowedTools
 	fieldMaxTurns
 	fieldTimeout
+	fieldSystemPrompt
 	fieldCount
 )
 
@@ -37,6 +39,7 @@ type settingsModel struct {
 	cursor      settingField
 	editing     bool
 	textInput   textinput.Model
+	textArea    textarea.Model
 	toolsCursor int
 	toolsSelect map[string]bool
 	width       int
@@ -56,6 +59,12 @@ func newSettingsView(cfg *internal.GlobalConfig) settingsModel {
 	ti.CharLimit = 100
 	ti.Width = 30
 
+	ta := textarea.New()
+	ta.SetWidth(60)
+	ta.SetHeight(5)
+	ta.CharLimit = 1000
+	ta.Placeholder = "Enter system prompt..."
+
 	toolsSelect := make(map[string]bool)
 	for _, tool := range cfg.Claude.AllowedTools {
 		toolsSelect[tool] = true
@@ -65,6 +74,7 @@ func newSettingsView(cfg *internal.GlobalConfig) settingsModel {
 		config:      cfg,
 		cursor:      fieldDefaultMaxIterations,
 		textInput:   ti,
+		textArea:    ta,
 		toolsSelect: toolsSelect,
 	}
 }
@@ -91,9 +101,9 @@ func (m settingsModel) fieldsForTab() (first, last settingField) {
 	case tabLoop:
 		return fieldDefaultMaxIterations, fieldDefaultMaxIterations
 	case tabClaude:
-		return fieldModel, fieldTimeout
+		return fieldModel, fieldSystemPrompt
 	}
-	return fieldDefaultMaxIterations, fieldTimeout
+	return fieldDefaultMaxIterations, fieldSystemPrompt
 }
 
 func (m settingsModel) updateNavigation(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
@@ -137,8 +147,12 @@ func (m settingsModel) updateNavigation(msg tea.KeyMsg) (settingsModel, tea.Cmd)
 			m.textInput.SetValue(strconv.Itoa(m.config.Claude.TimeoutSeconds))
 			m.textInput.Focus()
 			return m, textinput.Blink
+		case fieldSystemPrompt:
+			m.textArea.SetValue(m.config.Claude.SystemPrompt)
+			m.textArea.Focus()
+			return m, textarea.Blink
 		}
-	case key.Matches(msg, settingsKeys.Escape):
+	case key.Matches(msg, settingsKeys.Back):
 		return m, func() tea.Msg { return backFromSettingsMsg{} }
 	}
 	return m, nil
@@ -147,6 +161,10 @@ func (m settingsModel) updateNavigation(msg tea.KeyMsg) (settingsModel, tea.Cmd)
 func (m settingsModel) updateEditing(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
 	if m.cursor == fieldAllowedTools {
 		return m.updateToolsEditing(msg)
+	}
+
+	if m.cursor == fieldSystemPrompt {
+		return m.updateTextAreaEditing(msg)
 	}
 
 	switch {
@@ -162,6 +180,20 @@ func (m settingsModel) updateEditing(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m settingsModel) updateTextAreaEditing(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, settingsKeys.Escape):
+		m.editing = false
+		m.textArea.Blur()
+		m.config.Claude.SystemPrompt = m.textArea.Value()
+		return m, m.saveConfig
+	default:
+		var cmd tea.Cmd
+		m.textArea, cmd = m.textArea.Update(msg)
 		return m, cmd
 	}
 }
@@ -205,6 +237,8 @@ func (m *settingsModel) applyTextValue() {
 		if v, err := strconv.Atoi(value); err == nil && v > 0 {
 			m.config.Claude.TimeoutSeconds = v
 		}
+	case fieldSystemPrompt:
+		m.config.Claude.SystemPrompt = value
 	}
 }
 
@@ -247,9 +281,7 @@ func (m settingsModel) renderSettingsTabs() string {
 }
 
 func (m settingsModel) View() string {
-	s := headerStyle.Render("Settings") + "\n\n"
-
-	s += m.renderSettingsTabs() + "\n\n"
+	s := m.renderSettingsTabs() + "\n\n"
 
 	switch m.activeTab {
 	case tabLoop:
@@ -262,10 +294,14 @@ func (m settingsModel) View() string {
 			{field: fieldAllowedTools, label: "Allowed Tools", value: m.displayTools()},
 			{field: fieldMaxTurns, label: "Max Turns", value: m.displayMaxTurns()},
 			{field: fieldTimeout, label: "Timeout (seconds)", value: strconv.Itoa(m.config.Claude.TimeoutSeconds)},
+			{field: fieldSystemPrompt, label: "System Prompt", value: m.displaySystemPrompt()},
 		})
 
 		if m.editing && m.cursor == fieldAllowedTools {
 			s += "\n" + m.renderToolsEditor()
+		}
+		if m.editing && m.cursor == fieldSystemPrompt {
+			s += "\n" + m.renderTextAreaEditor()
 		}
 	}
 
@@ -273,6 +309,8 @@ func (m settingsModel) View() string {
 	if m.editing {
 		if m.cursor == fieldAllowedTools {
 			s += renderHelp(toolsEditKeys)
+		} else if m.cursor == fieldSystemPrompt {
+			s += renderHelp(textAreaEditKeys)
 		} else {
 			s += renderHelp(inputKeys)
 		}
@@ -336,6 +374,14 @@ func (m settingsModel) renderToolsEditor() string {
 	return s
 }
 
+func (m settingsModel) renderTextAreaEditor() string {
+	lines := strings.Split(m.textArea.View(), "\n")
+	for i, line := range lines {
+		lines[i] = "  " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m settingsModel) displayModel() string {
 	if m.config.Claude.Model == "" {
 		return "(default)"
@@ -357,11 +403,24 @@ func (m settingsModel) displayMaxTurns() string {
 	return strconv.Itoa(m.config.Claude.MaxTurns)
 }
 
+func (m settingsModel) displaySystemPrompt() string {
+	if m.config.Claude.SystemPrompt == "" {
+		return "(none)"
+	}
+	// Truncate for display
+	s := m.config.Claude.SystemPrompt
+	if len(s) > 40 {
+		s = s[:37] + "..."
+	}
+	return s
+}
+
 type settingsKeyMap struct {
 	Up     key.Binding
 	Down   key.Binding
 	Enter  key.Binding
 	Escape key.Binding
+	Back   key.Binding
 	Space  key.Binding
 	Tab    key.Binding
 }
@@ -379,6 +438,9 @@ var settingsKeys = settingsKeyMap{
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
 	),
+	Back: key.NewBinding(
+		key.WithKeys("q"),
+	),
 	Space: key.NewBinding(
 		key.WithKeys(" "),
 	),
@@ -391,11 +453,15 @@ var settingsHelpKeys = []keyBinding{
 	{Key: "tab", Desc: "switch tab"},
 	{Key: "j/k", Desc: "navigate"},
 	{Key: "enter", Desc: "edit"},
-	{Key: "esc", Desc: "back"},
+	{Key: "q", Desc: "menu"},
 }
 
 var toolsEditKeys = []keyBinding{
 	{Key: "j/k", Desc: "navigate"},
 	{Key: "space", Desc: "toggle"},
 	{Key: "enter", Desc: "done"},
+}
+
+var textAreaEditKeys = []keyBinding{
+	{Key: "esc", Desc: "save & exit"},
 }

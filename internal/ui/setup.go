@@ -72,7 +72,7 @@ func (m setupModel) updateDone(msg tea.KeyMsg) (setupModel, tea.Cmd) {
 func (m setupModel) View() string {
 	var s string
 
-	s += banner() + "\n\n"
+	s += appTitle() + "\n\n"
 
 	switch m.step {
 	case setupWelcome:

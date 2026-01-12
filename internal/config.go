@@ -31,6 +31,7 @@ type ClaudeConfig struct {
 	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
 	MaxTurns       int      `yaml:"max_turns,omitempty"`
 	TimeoutSeconds int      `yaml:"timeout_seconds,omitempty"`
+	SystemPrompt   string   `yaml:"system_prompt,omitempty"`
 }
 
 // GlobalConfig stores user preferences (in ~/.config/ralph/config.yaml)

@@ -10,7 +10,7 @@ type keyBinding struct {
 func renderHelp(bindings []keyBinding) string {
 	var parts []string
 	for _, b := range bindings {
-		part := helpKeyStyle.Render(b.Key) + ":" + helpDescStyle.Render(b.Desc)
+		part := helpKeyStyle.Render(b.Key) + " " + helpDescStyle.Render(b.Desc)
 		parts = append(parts, part)
 	}
 	return helpStyle.Render(strings.Join(parts, "  "))
@@ -44,17 +44,6 @@ var (
 		{Key: "enter", Desc: "save"},
 		{Key: "e", Desc: "edit"},
 		{Key: "esc", Desc: "cancel"},
-	}
-
-	viewHelpKeys = []keyBinding{
-		{Key: "j/k", Desc: "navigate"},
-		{Key: "space", Desc: "toggle done"},
-		{Key: "s", Desc: "select"},
-		{Key: "r", Desc: "run"},
-		{Key: "d", Desc: "delete"},
-		{Key: "tab", Desc: "filter"},
-		{Key: "esc", Desc: "back"},
-		{Key: "q", Desc: "quit"},
 	}
 
 	confirmKeys = []keyBinding{

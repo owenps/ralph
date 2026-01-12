@@ -2,10 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/owenps/ralph/internal"
@@ -21,12 +24,66 @@ const (
 	filterFeature
 	filterRefactor
 	filterResearch
+	filterNotes
 )
+
+// taskItem wraps internal.Task to implement list.Item
+type taskItem struct {
+	task internal.Task
+}
+
+func (i taskItem) Title() string       { return i.task.Description }
+func (i taskItem) Description() string { return string(i.task.Category) }
+func (i taskItem) FilterValue() string { return i.task.Description }
+
+// taskDelegate is a custom delegate for rendering tasks
+type taskDelegate struct {
+	selected *map[string]bool
+}
+
+func (d taskDelegate) Height() int                             { return 1 }
+func (d taskDelegate) Spacing() int                            { return 0 }
+func (d taskDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
+
+func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	ti, ok := item.(taskItem)
+	if !ok {
+		return
+	}
+
+	t := ti.task
+	cursor := "  "
+	style := menuItemStyle
+
+	if index == m.Index() {
+		cursor = cursorStyle.Render("> ")
+		style = selectedMenuItemStyle
+	}
+
+	// Selection indicator
+	selectMark := "  "
+	if d.selected != nil && (*d.selected)[t.ID] {
+		selectMark = successStyle.Render("● ")
+	}
+
+	badge := categoryBadge(string(t.Category))
+	width := m.Width() - 4
+	if width < 20 {
+		width = 20
+	}
+	desc := truncate(t.Description, width-12)
+
+	doneMarker := ""
+	if t.Done {
+		doneMarker = successStyle.Render("✔︎")
+	}
+
+	line := cursor + selectMark + badge.Render(string(t.Category)[:3]) + " " + style.Render(desc) + doneMarker
+	fmt.Fprint(w, line)
+}
 
 type viewModel struct {
 	tasks           []internal.Task
-	filtered        []internal.Task
-	cursor          int
 	filter          filterType
 	width           int
 	height          int
@@ -35,25 +92,63 @@ type viewModel struct {
 	selected        map[string]bool
 	showRunWarn     bool
 	showSelectWarn  bool
+	help            help.Model
+	keys            viewKeyMap
+	list            list.Model
 }
 
-type backToMenuMsg struct{}
 type deleteTaskMsg struct{ ID string }
 type toggleTaskMsg struct{ ID string }
+type editTaskMsg struct{ Task internal.Task }
 type clearDeletePromptMsg struct{}
 type clearRunWarnMsg struct{}
 type clearSelectWarnMsg struct{}
 type runSelectedTasksMsg struct{ TaskIDs []string }
+type showLoopMsg struct{}
+type openCreateMsg struct{}
+type openSettingsMsg struct{}
 
 func newViewTasks(tasks []internal.Task) viewModel {
+	h := help.New()
+	h.ShowAll = true // Use full help view to avoid truncation/ellipsis
+	h.Styles.ShortKey = helpKeyStyle
+	h.Styles.ShortDesc = helpDescStyle
+	h.Styles.ShortSeparator = helpDescStyle
+	h.Styles.FullKey = helpKeyStyle
+	h.Styles.FullDesc = helpDescStyle
+	h.Styles.FullSeparator = helpDescStyle
+
+	selected := make(map[string]bool)
+
+	// Create list with custom delegate
+	delegate := taskDelegate{selected: &selected}
+	items := tasksToItems(tasks)
+	l := list.New(items, delegate, 40, 10)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetFilteringEnabled(false)
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
+	l.DisableQuitKeybindings()
+
 	m := viewModel{
 		tasks:    tasks,
-		cursor:   0,
 		filter:   filterAll,
-		selected: make(map[string]bool),
+		selected: selected,
+		help:     h,
+		keys:     vKeys,
+		list:     l,
 	}
 	m.applyFilter()
 	return m
+}
+
+func tasksToItems(tasks []internal.Task) []list.Item {
+	items := make([]list.Item, len(tasks))
+	for i, t := range tasks {
+		items[i] = taskItem{task: t}
+	}
+	return items
 }
 
 func (m *viewModel) SetTasks(tasks []internal.Task) {
@@ -61,23 +156,47 @@ func (m *viewModel) SetTasks(tasks []internal.Task) {
 	m.applyFilter()
 }
 
+func (m *viewModel) SetSize(width, height int) {
+	if width <= 0 {
+		width = 80
+	}
+	if height <= 0 {
+		height = 24
+	}
+	m.width = width
+	m.height = height
+	m.help.Width = width
+	m.list.SetWidth(width * 2 / 5)
+	m.list.SetHeight(height - 10)
+}
+
 func (m *viewModel) applyFilter() {
+	var filtered []internal.Task
 	switch m.filter {
 	case filterAll:
-		m.filtered = m.tasks
+		filtered = m.tasks
 	case filterBug:
-		m.filtered = filterByCategory(m.tasks, internal.CategoryBug)
+		filtered = filterByCategory(m.tasks, internal.CategoryBug)
 	case filterFeature:
-		m.filtered = filterByCategory(m.tasks, internal.CategoryFeature)
+		filtered = filterByCategory(m.tasks, internal.CategoryFeature)
 	case filterRefactor:
-		m.filtered = filterByCategory(m.tasks, internal.CategoryRefactor)
+		filtered = filterByCategory(m.tasks, internal.CategoryRefactor)
 	case filterResearch:
-		m.filtered = filterByCategory(m.tasks, internal.CategoryResearch)
+		filtered = filterByCategory(m.tasks, internal.CategoryResearch)
+	case filterNotes:
+		filtered = filterByCategory(m.tasks, internal.CategoryNotes)
 	}
 
-	if m.cursor >= len(m.filtered) {
-		m.cursor = max(0, len(m.filtered)-1)
+	m.list.SetItems(tasksToItems(filtered))
+}
+
+func (m *viewModel) currentTask() *internal.Task {
+	if item := m.list.SelectedItem(); item != nil {
+		if ti, ok := item.(taskItem); ok {
+			return &ti.task
+		}
 	}
+	return nil
 }
 
 func filterByCategory(tasks []internal.Task, cat internal.Category) []internal.Task {
@@ -93,8 +212,7 @@ func filterByCategory(tasks []internal.Task, cat internal.Category) []internal.T
 func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case clearDeletePromptMsg:
@@ -112,9 +230,10 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, vKeys.Quit):
-			return m, tea.Quit
+		case key.Matches(msg, vKeys.Back):
+			return m, func() tea.Msg { return backToMenuMsg{} }
 		case key.Matches(msg, vKeys.Escape):
+			// Clear delete prompt or selection
 			if !m.lastDeletePress.IsZero() {
 				m.lastDeletePress = time.Time{}
 				m.deleteConfirmID = ""
@@ -122,40 +241,23 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 			}
 			if len(m.selected) > 0 {
 				m.selected = make(map[string]bool)
-				return m, nil
 			}
-			return m, func() tea.Msg { return backToMenuMsg{} }
-		case key.Matches(msg, vKeys.Up):
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			m.lastDeletePress = time.Time{}
-			m.deleteConfirmID = ""
-			m.showRunWarn = false
-			m.showSelectWarn = false
-		case key.Matches(msg, vKeys.Down):
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
-			m.lastDeletePress = time.Time{}
-			m.deleteConfirmID = ""
-			m.showRunWarn = false
-			m.showSelectWarn = false
+			return m, nil
+		case key.Matches(msg, vKeys.New):
+			return m, func() tea.Msg { return openCreateMsg{} }
 		case key.Matches(msg, vKeys.Tab):
-			m.filter = (m.filter + 1) % 5
+			m.filter = (m.filter + 1) % 6
 			m.applyFilter()
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
 			m.showRunWarn = false
 			m.showSelectWarn = false
 		case key.Matches(msg, vKeys.Toggle):
-			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-				task := m.filtered[m.cursor]
+			if task := m.currentTask(); task != nil {
 				return m, func() tea.Msg { return toggleTaskMsg{ID: task.ID} }
 			}
 		case key.Matches(msg, vKeys.Delete):
-			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-				task := m.filtered[m.cursor]
+			if task := m.currentTask(); task != nil {
 				now := time.Now()
 				if !m.lastDeletePress.IsZero() && m.deleteConfirmID == task.ID && now.Sub(m.lastDeletePress) < deleteConfirmWindow {
 					m.lastDeletePress = time.Time{}
@@ -169,8 +271,7 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 				})
 			}
 		case key.Matches(msg, vKeys.Select):
-			if len(m.filtered) > 0 && m.cursor < len(m.filtered) {
-				task := m.filtered[m.cursor]
+			if task := m.currentTask(); task != nil {
 				if task.Done {
 					m.showSelectWarn = true
 					return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
@@ -195,38 +296,63 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 			return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
 				return clearRunWarnMsg{}
 			})
+		case key.Matches(msg, vKeys.ShowLoop):
+			return m, func() tea.Msg { return showLoopMsg{} }
+		case key.Matches(msg, vKeys.Edit):
+			if task := m.currentTask(); task != nil {
+				t := *task
+				return m, func() tea.Msg { return editTaskMsg{Task: t} }
+			}
 		}
 	}
 
-	return m, nil
+	// Update list for navigation
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+
+	// Clear delete prompt on navigation
+	if _, ok := msg.(tea.KeyMsg); ok {
+		if key.Matches(msg.(tea.KeyMsg), vKeys.Up) || key.Matches(msg.(tea.KeyMsg), vKeys.Down) {
+			m.lastDeletePress = time.Time{}
+			m.deleteConfirmID = ""
+			m.showRunWarn = false
+			m.showSelectWarn = false
+		}
+	}
+
+	return m, cmd
 }
 
 func (m viewModel) View() string {
-	s := m.renderTabs()
+	if len(m.list.Items()) == 0 {
+		s := m.renderTabs() + "\n\n"
+		s += m.renderEmpty()
+		return s
+	}
+
+	s := appTitle() + "\n\n"
+	s += m.renderTabs()
 
 	if len(m.selected) > 0 {
 		s += "  " + successStyle.Render(fmt.Sprintf("%d selected", len(m.selected)))
 	}
 
-	s += "\n\n"
-
-	if len(m.filtered) == 0 {
-		s += m.renderEmpty()
-	} else {
-		s += m.renderSplitView()
-	}
-
-	s += "\n"
+	// Warnings appear inline after tabs
 	if !m.lastDeletePress.IsZero() {
-		s += warnStyle.Render("Press d again to delete") + "\n"
+		s += "  " + warnStyle.Render("Press d again to delete")
 	}
 	if m.showRunWarn {
-		s += warnStyle.Render("No tasks selected") + "\n"
+		s += "  " + warnStyle.Render("No tasks selected")
 	}
 	if m.showSelectWarn {
-		s += warnStyle.Render("Cannot select completed task") + "\n"
+		s += "  " + warnStyle.Render("Cannot select completed task")
 	}
-	s += renderHelp(viewHelpKeys)
+
+	s += "\n\n"
+	s += m.renderSplitView()
+
+	s += "\n"
+	s += m.help.View(m.keys)
 
 	return s
 }
@@ -241,6 +367,7 @@ func (m viewModel) renderTabs() string {
 		{"feature", filterFeature},
 		{"refactor", filterRefactor},
 		{"research", filterResearch},
+		{"notes", filterNotes},
 	}
 
 	var tabViews []string
@@ -256,7 +383,12 @@ func (m viewModel) renderTabs() string {
 }
 
 func (m viewModel) renderEmpty() string {
-	return helpDescStyle.Render("No tasks yet. Enjoy the peace.")
+	s := helpDescStyle.Render("No tasks yet. Enjoy the peace.") + "\n\n"
+	s += renderHelp([]keyBinding{
+		{Key: "n", Desc: "new task"},
+		{Key: "q", Desc: "menu"},
+	})
+	return s
 }
 
 func (m viewModel) renderSplitView() string {
@@ -267,10 +399,10 @@ func (m viewModel) renderSplitView() string {
 	listWidth := totalWidth * 2 / 5
 	detailWidth := totalWidth - listWidth - 5
 
-	listContent := m.renderTaskList(listWidth)
+	// Use list's built-in view
 	listPanel := borderStyle.
 		Width(listWidth).
-		Render(listContent)
+		Render(m.list.View())
 
 	detailContent := m.renderTaskDetail(detailWidth)
 	detailPanel := borderStyle.
@@ -280,45 +412,13 @@ func (m viewModel) renderSplitView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, " ", detailPanel)
 }
 
-func (m viewModel) renderTaskList(width int) string {
-	var lines []string
-
-	for i, t := range m.filtered {
-		cursor := "  "
-		style := menuItemStyle
-
-		if m.cursor == i {
-			cursor = cursorStyle.Render("> ")
-			style = selectedMenuItemStyle
-		}
-
-		// Selection indicator
-		selectMark := "  "
-		if m.selected[t.ID] {
-			selectMark = successStyle.Render("● ")
-		}
-
-		badge := categoryBadge(string(t.Category))
-		desc := truncate(t.Description, width-18)
-
-		doneMarker := ""
-		if t.Done {
-			doneMarker = successStyle.Render(" ✔︎")
-		}
-
-		line := cursor + selectMark + badge.Render(string(t.Category)[:3]) + " " + style.Render(desc) + doneMarker
-		lines = append(lines, line)
-	}
-
-	return strings.Join(lines, "\n")
-}
-
 func (m viewModel) renderTaskDetail(width int) string {
-	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
+	task := m.currentTask()
+	if task == nil {
 		return helpDescStyle.Render("No task selected")
 	}
 
-	t := m.filtered[m.cursor]
+	t := *task
 	var s strings.Builder
 
 	badge := categoryBadge(string(t.Category))
@@ -363,6 +463,9 @@ func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
 	return s[:maxLen-3] + "..."
 }
 
@@ -390,43 +493,78 @@ func wrapText(s string, width int) string {
 }
 
 type viewKeyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	Tab    key.Binding
-	Escape key.Binding
-	Quit   key.Binding
-	Delete key.Binding
-	Toggle key.Binding
-	Select key.Binding
-	Run    key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	Tab      key.Binding
+	Escape   key.Binding
+	Back     key.Binding
+	Delete   key.Binding
+	Toggle   key.Binding
+	Select   key.Binding
+	Run      key.Binding
+	ShowLoop key.Binding
+	Edit     key.Binding
+	New      key.Binding
+}
+
+func (k viewKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Toggle, k.Edit, k.New, k.Select, k.Run, k.ShowLoop, k.Delete, k.Tab, k.Escape, k.Back}
+}
+
+func (k viewKeyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Toggle, k.Edit, k.New, k.Select, k.Run},
+		{k.ShowLoop, k.Delete, k.Tab, k.Escape, k.Back},
+	}
 }
 
 var vKeys = viewKeyMap{
 	Up: key.NewBinding(
 		key.WithKeys("up", "k"),
+		key.WithHelp("j/k", "navigate"),
 	),
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
+		key.WithHelp("j/k", "navigate"),
 	),
 	Tab: key.NewBinding(
 		key.WithKeys("tab"),
+		key.WithHelp("tab", "filter"),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
+		key.WithHelp("esc", "clear"),
 	),
-	Quit: key.NewBinding(
-		key.WithKeys("q", "ctrl+c"),
+	Back: key.NewBinding(
+		key.WithKeys("q"),
+		key.WithHelp("q", "menu"),
 	),
 	Delete: key.NewBinding(
 		key.WithKeys("d"),
+		key.WithHelp("d", "delete"),
 	),
 	Toggle: key.NewBinding(
 		key.WithKeys(" ", "enter"),
+		key.WithHelp("space", "toggle done"),
 	),
 	Select: key.NewBinding(
 		key.WithKeys("s"),
+		key.WithHelp("s", "select"),
 	),
 	Run: key.NewBinding(
 		key.WithKeys("r"),
+		key.WithHelp("r", "run"),
+	),
+	ShowLoop: key.NewBinding(
+		key.WithKeys("l"),
+		key.WithHelp("l", "show loop"),
+	),
+	Edit: key.NewBinding(
+		key.WithKeys("e"),
+		key.WithHelp("e", "edit"),
+	),
+	New: key.NewBinding(
+		key.WithKeys("n"),
+		key.WithHelp("n", "new task"),
 	),
 }

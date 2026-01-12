@@ -1,31 +1,29 @@
 package ui
 
 import (
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
 // Version can be set via ldflags at build time
-var Version = "v0.1.0"
+var Version = "v0.1.1"
 
 var (
 	colorYellow     = lipgloss.AdaptiveColor{Light: "#B8860B", Dark: "#FFD93D"}
 	colorDarkYellow = lipgloss.AdaptiveColor{Light: "#806000", Dark: "#B8960C"}
-	colorTeal       = lipgloss.AdaptiveColor{Light: "#0D9488", Dark: "#5EEAD4"}
+	colorDimYellow  = lipgloss.AdaptiveColor{Light: "#A07808", Dark: "#8B7500"}
 	colorText       = lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#FFFFFF"}
 	colorGray       = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}
 	colorDarkGray   = lipgloss.AdaptiveColor{Light: "#E5E5E5", Dark: "#444444"}
 	colorBlack      = lipgloss.Color("#000000")
-	colorBug        = lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#FF6B6B"}
-	colorFeature    = lipgloss.AdaptiveColor{Light: "#047857", Dark: "#2A9D8F"}
-	colorRefactor   = lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}
-	colorResearch   = lipgloss.AdaptiveColor{Light: "#2563EB", Dark: "#60A5FA"}
-)
-
-var (
-	completedStyle = lipgloss.NewStyle().
-		Foreground(colorDarkYellow)
+	// Muted category colors
+	colorBug      = lipgloss.AdaptiveColor{Light: "#B05050", Dark: "#E88080"}
+	colorFeature  = lipgloss.AdaptiveColor{Light: "#3D7068", Dark: "#5BA89D"}
+	colorRefactor = lipgloss.AdaptiveColor{Light: "#8B6FC0", Dark: "#B9A8E0"}
+	colorResearch = lipgloss.AdaptiveColor{Light: "#5B80C0", Dark: "#8FB0E0"}
+	colorNotes    = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}
 )
 
 var (
@@ -34,7 +32,7 @@ var (
 			Bold(true)
 
 	headerStyle = lipgloss.NewStyle().
-			Foreground(colorTeal).
+			Foreground(colorGray).
 			Bold(true).
 			Padding(0, 1)
 
@@ -60,7 +58,7 @@ var (
 
 	borderStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorTeal)
+			BorderForeground(colorDimYellow)
 
 	activeTabStyle = lipgloss.NewStyle().
 			Foreground(colorBlack).
@@ -93,6 +91,11 @@ var (
 			Background(colorResearch).
 			Padding(0, 1)
 
+	notesBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorNotes).
+			Padding(0, 1)
+
 	inputLabelStyle = lipgloss.NewStyle().
 			Foreground(colorYellow).
 			Bold(true)
@@ -111,11 +114,11 @@ var (
 			Padding(1, 2)
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(colorFeature).
+			Foreground(colorGray).
 			Bold(true)
 
 	detailLabelStyle = lipgloss.NewStyle().
-				Foreground(colorTeal).
+				Foreground(colorGray).
 				Bold(true)
 
 	detailValueStyle = lipgloss.NewStyle().
@@ -141,44 +144,35 @@ func categoryBadge(category string) lipgloss.Style {
 		return refactorBadge
 	case "research":
 		return researchBadge
+	case "notes":
+		return notesBadge
 	default:
 		return inactiveTabStyle
 	}
 }
 
-func banner() string {
-	lines := []string{
-		"█████▀█████      ▄▄▄▄   █████               ████",
-		"█████ █████  ▄███ ████  █████     ▄▄█▀███▄  ████",
-		"█████ █████  ████ ████  █████    ████ ████  ████▄███▄",
-		"█████▀███▄▄  ▄▄▄▄▄████  █████ ▄  ████▀███▀  ████ ████",
-		"█████ █████  ████▄████  ▀████▄█  ▀███       ████ ████",
+func appTitle() string {
+	bracketStyle := lipgloss.NewStyle().Foreground(colorDimYellow)
+	versionStyle := lipgloss.NewStyle().Foreground(colorGray)
+	promptStyle := lipgloss.NewStyle().Foreground(colorGray)
+	labelStyle := lipgloss.NewStyle().Foreground(colorGray)
+	titleBoxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorGray).
+		Padding(0, 1)
+
+	// Get current directory, replace home with ~
+	dir, _ := os.Getwd()
+	if home, err := os.UserHomeDir(); err == nil {
+		dir = strings.Replace(dir, home, "~", 1)
 	}
 
-	// Column positions for white highlights (vertical stems in each letter)
-	highlightCols := map[int]bool{
-		2: true, 15: true, 25: true, 34: true, 45: true,
-	}
+	title := promptStyle.Render(">") + " " +
+		bracketStyle.Render("[") +
+		titleStyle.Render("ralph") +
+		bracketStyle.Render("]") + " " +
+		versionStyle.Render("("+Version+")") + "\n\n" +
+		labelStyle.Render("directory:") + " " + dir
 
-	baseStyle := lipgloss.NewStyle().Foreground(colorYellow)
-	highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
-
-	var result strings.Builder
-	for i, line := range lines {
-		col := 0
-		for _, r := range line {
-			// Only highlight on rows 1, 2, 3 (middle rows)
-			if highlightCols[col] && i >= 1 && i <= 3 {
-				result.WriteString(highlightStyle.Render(string(r)))
-			} else {
-				result.WriteString(baseStyle.Render(string(r)))
-			}
-			col++
-		}
-		if i < len(lines)-1 {
-			result.WriteString("\n")
-		}
-	}
-
-	return borderStyle.Padding(1).Render(result.String())
+	return titleBoxStyle.Render(title)
 }

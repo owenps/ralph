@@ -86,7 +86,7 @@ func (m loopConfigModel) Update(msg tea.Msg) (loopConfigModel, tea.Cmd) {
 
 func (m loopConfigModel) updateIterations(msg tea.KeyMsg) (loopConfigModel, tea.Cmd) {
 	switch {
-	case key.Matches(msg, loopConfigKeys.Escape):
+	case key.Matches(msg, loopConfigKeys.Back):
 		return m, func() tea.Msg { return cancelLoopConfigMsg{} }
 	case key.Matches(msg, loopConfigKeys.Enter):
 		value := strings.TrimSpace(m.iterInput.Value())
@@ -110,6 +110,8 @@ func (m loopConfigModel) updateIterations(msg tea.KeyMsg) (loopConfigModel, tea.
 
 func (m loopConfigModel) updatePreview(msg tea.KeyMsg) (loopConfigModel, tea.Cmd) {
 	switch {
+	case key.Matches(msg, loopConfigKeys.Back):
+		return m, func() tea.Msg { return cancelLoopConfigMsg{} }
 	case key.Matches(msg, loopConfigKeys.Escape):
 		m.step = loopConfigIterations
 		m.iterInput.Focus()
@@ -180,7 +182,7 @@ func (m loopConfigModel) viewPreview() string {
 	s.WriteString(fmt.Sprintf("%d", m.maxIterations))
 	s.WriteString("\n\n")
 
-	s.WriteString(helpDescStyle.Render("Press Enter to start, Esc to go back"))
+	s.WriteString(helpDescStyle.Render("Press Enter to start, Esc to edit, q to cancel"))
 	s.WriteString("\n\n")
 
 	s.WriteString(renderHelp(previewKeys))
@@ -191,6 +193,7 @@ func (m loopConfigModel) viewPreview() string {
 type loopConfigKeyMap struct {
 	Enter  key.Binding
 	Escape key.Binding
+	Back   key.Binding
 }
 
 var loopConfigKeys = loopConfigKeyMap{
@@ -199,5 +202,8 @@ var loopConfigKeys = loopConfigKeyMap{
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
+	),
+	Back: key.NewBinding(
+		key.WithKeys("q"),
 	),
 }

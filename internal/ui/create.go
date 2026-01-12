@@ -2,9 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,15 +23,47 @@ const (
 	stepConfirmCancel
 )
 
+// categoryItem wraps internal.Category to implement list.Item
+type categoryItem struct {
+	category internal.Category
+}
+
+func (i categoryItem) Title() string       { return string(i.category) }
+func (i categoryItem) Description() string { return "" }
+func (i categoryItem) FilterValue() string { return string(i.category) }
+
+// categoryDelegate renders category items in the list
+type categoryDelegate struct{}
+
+func (d categoryDelegate) Height() int                             { return 1 }
+func (d categoryDelegate) Spacing() int                            { return 0 }
+func (d categoryDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
+
+func (d categoryDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	ci, ok := item.(categoryItem)
+	if !ok {
+		return
+	}
+
+	cursor := "  "
+	if index == m.Index() {
+		cursor = cursorStyle.Render("> ")
+	}
+
+	badge := categoryBadge(string(ci.category))
+	fmt.Fprint(w, cursor+badge.Render(string(ci.category)))
+}
+
 type createModel struct {
 	step             createStep
 	prevStep         createStep
-	categoryCursor   int
+	categoryList     list.Model
 	descriptionInput textinput.Model
 	stepsInput       textarea.Model
 	confirmDialog    *confirmDialog
 
 	// Task data being built
+	editingID   string // non-empty if editing existing task
 	category    internal.Category
 	description string
 	steps       []string
@@ -39,10 +73,29 @@ type createModel struct {
 }
 
 type saveTaskMsg struct {
-	Task *internal.Task
+	Task      *internal.Task
+	EditingID string // non-empty if updating existing task
 }
 
 type cancelCreateMsg struct{}
+
+func newCategoryList(selectedIndex int) list.Model {
+	items := make([]list.Item, len(internal.Categories))
+	for i, cat := range internal.Categories {
+		items[i] = categoryItem{category: cat}
+	}
+
+	l := list.New(items, categoryDelegate{}, 30, len(internal.Categories)+2)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetFilteringEnabled(false)
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
+	l.DisableQuitKeybindings()
+	l.Select(selectedIndex)
+
+	return l
+}
 
 func newCreateWizard() createModel {
 	ti := textinput.New()
@@ -57,9 +110,43 @@ func newCreateWizard() createModel {
 
 	return createModel{
 		step:             stepCategory,
-		categoryCursor:   0,
+		categoryList:     newCategoryList(0),
 		descriptionInput: ti,
 		stepsInput:       ta,
+	}
+}
+
+func newCreateWizardWithTask(task internal.Task) createModel {
+	ti := textinput.New()
+	ti.Placeholder = "A brief overview..."
+	ti.CharLimit = 200
+	ti.Width = 50
+	ti.SetValue(task.Description)
+
+	ta := textarea.New()
+	ta.Placeholder = "How to complete the task..."
+	ta.SetWidth(50)
+	ta.SetHeight(6)
+	ta.SetValue(strings.Join(task.Steps, "\n"))
+
+	// Find category index
+	categoryIndex := 0
+	for i, cat := range internal.Categories {
+		if cat == task.Category {
+			categoryIndex = i
+			break
+		}
+	}
+
+	return createModel{
+		step:             stepCategory,
+		categoryList:     newCategoryList(categoryIndex),
+		descriptionInput: ti,
+		stepsInput:       ta,
+		editingID:        task.ID,
+		category:         task.Category,
+		description:      task.Description,
+		steps:            task.Steps,
 	}
 }
 
@@ -92,23 +179,23 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 
 func (m createModel) updateCategory(msg tea.KeyMsg) (createModel, tea.Cmd) {
 	switch {
-	case key.Matches(msg, createKeys.Up):
-		if m.categoryCursor > 0 {
-			m.categoryCursor--
-		}
-	case key.Matches(msg, createKeys.Down):
-		if m.categoryCursor < len(internal.Categories)-1 {
-			m.categoryCursor++
-		}
 	case key.Matches(msg, createKeys.Enter):
-		m.category = internal.Categories[m.categoryCursor]
-		m.step = stepDescription
-		m.descriptionInput.Focus()
-		return m, textinput.Blink
+		if item := m.categoryList.SelectedItem(); item != nil {
+			if ci, ok := item.(categoryItem); ok {
+				m.category = ci.category
+				m.step = stepDescription
+				m.descriptionInput.Focus()
+				return m, textinput.Blink
+			}
+		}
 	case key.Matches(msg, createKeys.Escape):
 		return m, func() tea.Msg { return cancelCreateMsg{} }
 	}
-	return m, nil
+
+	// Let the list handle navigation
+	var cmd tea.Cmd
+	m.categoryList, cmd = m.categoryList.Update(msg)
+	return m, cmd
 }
 
 func (m createModel) updateDescription(msg tea.KeyMsg) (createModel, tea.Cmd) {
@@ -157,7 +244,7 @@ func (m createModel) updatePreview(msg tea.KeyMsg) (createModel, tea.Cmd) {
 	switch {
 	case key.Matches(msg, createKeys.Enter):
 		t := internal.NewTask(m.category, m.description, m.steps)
-		return m, func() tea.Msg { return saveTaskMsg{Task: t} }
+		return m, func() tea.Msg { return saveTaskMsg{Task: t, EditingID: m.editingID} }
 	case key.Matches(msg, createKeys.Edit):
 		m.step = stepCategory
 		return m, nil
@@ -213,18 +300,7 @@ func (m createModel) View() string {
 
 func (m createModel) viewCategory() string {
 	s := inputLabelStyle.Render("Select Category:") + "\n\n"
-
-	for i, cat := range internal.Categories {
-		cursor := "  "
-		badge := categoryBadge(string(cat))
-
-		if m.categoryCursor == i {
-			cursor = cursorStyle.Render("> ")
-		}
-
-		s += cursor + badge.Render(string(cat)) + "\n"
-	}
-
+	s += m.categoryList.View()
 	s += "\n"
 	s += renderHelp(wizardKeys)
 	return s
@@ -277,21 +353,6 @@ func parseSteps(input string) []string {
 		}
 	}
 	return steps
-}
-
-func catDescription(cat internal.Category) string {
-	switch cat {
-	case internal.CategoryBug:
-		return "Bug fix"
-	case internal.CategoryFeature:
-		return "New feature"
-	case internal.CategoryRefactor:
-		return "Code refactoring"
-	case internal.CategoryResearch:
-		return "Research"
-	default:
-		return ""
-	}
 }
 
 type createKeyMap struct {

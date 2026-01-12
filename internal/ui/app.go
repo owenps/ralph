@@ -34,7 +34,7 @@ type App struct {
 	store         *internal.TaskStore
 	globalConfig  *internal.GlobalConfig
 	setupWizard   setupModel
-	menu          menuModel
+	menuView      menuModel
 	createWizard  createModel
 	viewTasks     viewModel
 	settingsView  settingsModel
@@ -59,16 +59,9 @@ func NewAppForInit() App {
 }
 
 func newAppWithOptions(forceInit bool) App {
-	menuItems := []menuItem{
-		{Name: "Create Task", Description: "Create a new backlog task"},
-		{Name: "Manage Tasks", Description: "View, manage, and run tasks"},
-		{Name: "Settings", Description: "Configure Ralph settings"},
-	}
-
 	return App{
 		state:     stateInit,
 		forceInit: forceInit,
-		menu:      newMenu(menuItems),
 	}
 }
 
@@ -84,6 +77,7 @@ type projectNotFoundMsg struct{}
 type projectInitializedMsg struct{}
 type tasksLoadedMsg struct{ tasks []internal.Task }
 type errMsg struct{ err error }
+type backToMenuMsg struct{}
 
 func (m App) checkGlobalConfig() tea.Msg {
 	if internal.GlobalConfigExists() {
@@ -134,13 +128,22 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle dismissable warning - any key returns to manage tasks
 		if m.warnErr != nil {
 			m.warnErr = nil
+			m.viewTasks.SetSize(m.width, m.height)
 			m.state = stateView
 			return m, nil
 		}
 
-		// States with text input only respond to ctrl+c (not 'q')
-		if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
-			if key.Matches(msg, appKeys.QuitCtrlC) {
+		// Only menu and noProject states quit on 'q'
+		// All other states handle 'q' themselves (typically as "back")
+		if m.state == stateMenu || m.state == stateNoProject {
+			if key.Matches(msg, appKeys.Quit) {
+				return m, tea.Quit
+			}
+		}
+
+		// ctrl+c requires double-press confirmation in input-heavy states
+		if key.Matches(msg, appKeys.QuitCtrlC) {
+			if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
 				now := time.Now()
 				if !m.lastQuitPress.IsZero() && now.Sub(m.lastQuitPress) < quitConfirmWindow {
 					return m, tea.Quit
@@ -150,10 +153,13 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return clearQuitPromptMsg{}
 				})
 			}
-			// Reset quit confirmation on any other key
-			m.lastQuitPress = time.Time{}
-		} else if key.Matches(msg, appKeys.Quit) {
+			// Other states quit immediately on ctrl+c
 			return m, tea.Quit
+		}
+
+		// Reset quit confirmation on any other key in input-heavy states
+		if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
+			m.lastQuitPress = time.Time{}
 		}
 
 	case globalConfigFoundMsg:
@@ -198,12 +204,14 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store = internal.NewTaskStore(tasksPath)
 		m.store.Load()
 		m.viewTasks = newViewTasks(msg.tasks)
+		m.viewTasks.SetSize(m.width, m.height)
 		// Load global config
 		cfg, err := internal.LoadGlobalConfig()
 		if err != nil {
 			cfg = internal.DefaultGlobalConfig()
 		}
 		m.globalConfig = cfg
+		m.menuView = newMenuModel()
 		m.state = stateMenu
 		return m, nil
 
@@ -211,37 +219,48 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		return m, tea.Quit
 
-	case menuSelectMsg:
-		switch msg.Index {
-		case 0:
-			m.createWizard = newCreateWizard()
-			m.state = stateCreate
-			return m, nil
-		case 1:
-			m.viewTasks.SetTasks(m.store.All())
-			m.state = stateView
-			return m, nil
-		case 2:
-			m.settingsView = newSettingsView(m.globalConfig)
-			m.state = stateSettings
-			return m, nil
-		}
-
-	case saveTaskMsg:
-		m.store.Add(msg.Task)
-		if err := m.store.Save(); err != nil {
-			m.err = err
-			return m, tea.Quit
-		}
-		m.state = stateMenu
+	case openTasksFromMenuMsg:
+		m.viewTasks.SetSize(m.width, m.height)
+		m.state = stateView
 		return m, nil
 
-	case cancelCreateMsg:
-		m.state = stateMenu
+	case openSettingsFromMenuMsg:
+		m.settingsView = newSettingsView(m.globalConfig)
+		m.state = stateSettings
 		return m, nil
 
 	case backToMenuMsg:
 		m.state = stateMenu
+		return m, nil
+
+	case openCreateMsg:
+		m.createWizard = newCreateWizard()
+		m.state = stateCreate
+		return m, nil
+
+	case openSettingsMsg:
+		m.settingsView = newSettingsView(m.globalConfig)
+		m.state = stateSettings
+		return m, nil
+
+	case saveTaskMsg:
+		if msg.EditingID != "" {
+			m.store.Update(msg.EditingID, msg.Task)
+		} else {
+			m.store.Add(msg.Task)
+		}
+		if err := m.store.Save(); err != nil {
+			m.err = err
+			return m, tea.Quit
+		}
+		m.viewTasks.SetTasks(m.store.All())
+		m.viewTasks.SetSize(m.width, m.height)
+		m.state = stateView
+		return m, nil
+
+	case cancelCreateMsg:
+		m.viewTasks.SetSize(m.width, m.height)
+		m.state = stateView
 		return m, nil
 
 	case deleteTaskMsg:
@@ -260,6 +279,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.viewTasks.SetTasks(m.store.All())
+		return m, nil
+
+	case editTaskMsg:
+		m.createWizard = newCreateWizardWithTask(msg.Task)
+		m.state = stateCreate
 		return m, nil
 
 	case backFromSettingsMsg:
@@ -282,6 +306,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case cancelLoopConfigMsg:
+		m.viewTasks.SetSize(m.width, m.height)
 		m.state = stateView
 		return m, nil
 
@@ -295,8 +320,8 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loopView = newLoopView(runner)
 		m.state = stateLoopRunning
 
-		// Start the loop in background
-		return m, m.startLoop
+		// Start the loop in background and init the loop view components
+		return m, tea.Batch(m.startLoop, m.loopView.Init())
 
 	case loopOutputMsg:
 		m.loopView, _ = m.loopView.Update(msg)
@@ -311,7 +336,17 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case hideLoopViewMsg:
+		m.viewTasks.SetSize(m.width, m.height)
 		m.state = stateView
+		return m, nil
+
+	case showLoopMsg:
+		if m.loopRunner != nil {
+			state := m.loopRunner.GetState()
+			if state.Status == internal.RunStatusRunning {
+				m.state = stateLoopRunning
+			}
+		}
 		return m, nil
 	}
 
@@ -343,7 +378,7 @@ func (m App) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m App) updateMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	m.menu, cmd = m.menu.Update(msg)
+	m.menuView, cmd = m.menuView.Update(msg)
 	return m, cmd
 }
 
@@ -423,7 +458,7 @@ func (m App) View() string {
 	case stateNoProject:
 		return m.viewNoProject()
 	case stateMenu:
-		return m.menu.View()
+		return m.menuView.View()
 	case stateCreate:
 		s := m.createWizard.View()
 		if !m.lastQuitPress.IsZero() {
@@ -444,7 +479,7 @@ func (m App) View() string {
 }
 
 func (m App) viewNoProject() string {
-	s := banner() + "\n\n"
+	s := appTitle() + "\n\n"
 	s += warnStyle.Render("No Ralph project found in this directory.") + "\n\n"
 	s += helpDescStyle.Render("Run ") + codeStyle.Render("ralph init") + helpDescStyle.Render(" to start tracking tasks here.") + "\n\n"
 	s += renderHelp([]keyBinding{

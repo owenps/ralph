@@ -15,9 +15,10 @@ const (
 	CategoryFeature  Category = "feature"
 	CategoryRefactor Category = "refactor"
 	CategoryResearch Category = "research"
+	CategoryNotes    Category = "notes"
 )
 
-var Categories = []Category{CategoryBug, CategoryFeature, CategoryRefactor, CategoryResearch}
+var Categories = []Category{CategoryBug, CategoryFeature, CategoryRefactor, CategoryResearch, CategoryNotes}
 
 func (c Category) String() string {
 	return string(c)
@@ -126,6 +127,19 @@ func (s *TaskStore) ToggleDone(id string) bool {
 	for i, t := range s.tasks {
 		if t.ID == id {
 			s.tasks[i].Done = !t.Done
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TaskStore) Update(id string, updated *Task) bool {
+	for i, t := range s.tasks {
+		if t.ID == id {
+			// Preserve the original ID and done status
+			updated.ID = id
+			updated.Done = t.Done
+			s.tasks[i] = *updated
 			return true
 		}
 	}

@@ -12,16 +12,16 @@ import (
 )
 
 type LoopState struct {
-	RunID           string
-	CurrentTaskIdx  int
-	CurrentTaskID   string
-	TotalTasks      int
-	Iteration       int
-	MaxIterations   int
-	Status          RunStatus
-	Output          string
-	GracefulStop    bool
-	ImmediateAbort  bool
+	RunID          string
+	CurrentTaskIdx int
+	CurrentTaskID  string
+	TotalTasks     int
+	Iteration      int
+	MaxIterations  int
+	Status         RunStatus
+	Output         string
+	GracefulStop   bool
+	ImmediateAbort bool
 }
 
 type LoopRunner struct {
@@ -204,6 +204,9 @@ func (lr *LoopRunner) invokeClaud(ctx context.Context, task Task) (string, bool,
 	if lr.config.Claude.MaxTurns > 0 {
 		args = append(args, "--max-turns", fmt.Sprintf("%d", lr.config.Claude.MaxTurns))
 	}
+	if lr.config.Claude.SystemPrompt != "" {
+		args = append(args, "--append-system-prompt", lr.config.Claude.SystemPrompt)
+	}
 
 	timeout := time.Duration(lr.config.Claude.TimeoutSeconds) * time.Second
 	if timeout == 0 {
@@ -263,7 +266,7 @@ func (lr *LoopRunner) buildPrompt(task Task) string {
 
 func (lr *LoopRunner) checkCompletion(output string) bool {
 	// Try to parse as JSON first
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(output), &result); err == nil {
 		// Check for completion in JSON structure
 		if text, ok := result["result"].(string); ok {
