@@ -1,48 +1,75 @@
-# Ralph TUI
+# Jolteon :zap:
 
-A TUI for planning and running claude code on a autonmous loop based on the
-[Ralph Wiggem](https://ghuntley.com/ralph/) technique.
+A TUI coordination layer above [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Instead of running multiple Claude instances in the same workspace, Jolteon
+creates and helps manage git worktree per task so Claude can work independently and
+uninterupted.
 
-![task-demo](./task-demo.gif)
+> [!IMPORTANT]
+> jolteon is still in development, still ironing out issues.
 
-## What Ralph Can Do
+## What Jolteon Can Do
 
-Ralph is built to help chew through your development backlog and never ending list
-of TODOs. Run Ralph when you are taking a break or while away from your desk!
+Jolteon is built to help chew through your development backlog. Each task gets
+its own worktree and Claude session — you stay in control of every interaction.
 
-The basic flow is as [simple as the man himself](https://www.youtube.com/watch?v=wUpe0Q1HnR4)!
+1. **Create Tasks**: Add tasks from the TUI or import GitHub issues with
+   `jolteon sync`
+2. **Start a Session**: Press Enter on a task — Jolteon creates a worktree and
+   launches Claude Code in it
+3. **Ship It**: Press `p` to push the branch and create a PR, then `x` to clean
+   up the worktree
 
-1. [✔︎] **Create Tasks**: Create small digestible _task_ that you never got around
-   to completing.
-1. [✔︎] **Select Tasks**: Select a set of tasks into a _sprint_.
-1. [✔︎] **Run Ralph Loop**: Execute the sprint which runs claude in a loop for a
-   maximum number of iterations.
-
-![ralph-wiggem](https://media1.tenor.com/m/u1_XOvKApKgAAAAC/ralph-wiggum.gif)
-
-Ralph tracks each task as a individual `git commit` so you can review the changes
-and polish before creating a PR. As Ralph is working, it'll update it progress
-in `.ralph/progress.txt` so the next iteration (or even you) can understand the full
-scope of the current work.
+Tasks can come from local YAML or GitHub issues. Jolteon manages the lifecycle:
+task -> worktree -> Claude session -> PR -> cleanup.
 
 ## Installation
 
-Smooth installation with Homebrew is still work in progress. For now fetch the
-latest.
-
 ```sh
-go install github.com/owenps/ralph@latest
+go install github.com/owenps/jolteon@latest
 ```
 
-Be sure `~/go/bin` is in your PATH. Then in any project initialize Ralph.
+Be sure `~/go/bin` is in your PATH. Then in any project initialize Jolteon.
 
 ```sh
-ralph init
-ralph
+jolteon init
+jolteon
 ```
+
+## CLI
+
+| Command           | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `jolteon`         | Launch the TUI dashboard                        |
+| `jolteon init`    | Initialize Jolteon in the current directory     |
+| `jolteon sync`    | Import open GitHub issues into the task backlog |
+| `jolteon clean`   | Remove worktrees for completed tasks            |
+| `jolteon help`    | Show help                                       |
+| `jolteon version` | Show version                                    |
+
+## Keybindings
+
+| Key     | Action                      |
+| ------- | --------------------------- |
+| `j/k`   | Navigate tasks              |
+| `enter` | Start/resume Claude session |
+| `n`     | New task                    |
+| `e`     | Edit task                   |
+| `d`     | Delete task (press twice)   |
+| `p`     | Push branch and create PR   |
+| `x`     | Clean worktree              |
+| `S`     | Sync GitHub issues          |
+| `tab`   | Filter by status            |
+| `q`     | Quit                        |
 
 ## Data
 
-- Ralph creates one user config under `~/.config/ralph/`
-- Project-level data (tasks, sprints, etc.) can be found at `.ralph/` in your project
-  directory
+![jolteon](./jolteon.gif)
+
+- User config lives at `~/.config/jolteon/`
+- Project-level data (tasks) lives at `.jolteon/` in your project directory
+- Worktrees are created in `.worktrees/` (gitignored)
+
+## Acknowledgements
+
+- Assets curtosy of [https://sprites.pmdcollab.org/]

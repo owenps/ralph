@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/owenps/ralph/internal"
+	"github.com/owenps/jolteon/internal"
 )
 
 type createStep int
@@ -365,6 +365,38 @@ type createKeyMap struct {
 	Edit   key.Binding
 	CtrlD  key.Binding
 }
+
+// Help key binding presets for wizard views
+var (
+	wizardKeys = []keyBinding{
+		{Key: "j/k", Desc: "navigate"},
+		{Key: "enter", Desc: "confirm"},
+		{Key: "esc", Desc: "back"},
+		{Key: "ctrl+c", Desc: "quit"},
+	}
+
+	inputKeys = []keyBinding{
+		{Key: "enter", Desc: "confirm"},
+		{Key: "esc", Desc: "back"},
+	}
+
+	textAreaKeys = []keyBinding{
+		{Key: "ctrl+d", Desc: "done"},
+		{Key: "esc", Desc: "back"},
+	}
+
+	previewKeys = []keyBinding{
+		{Key: "enter", Desc: "save"},
+		{Key: "e", Desc: "edit"},
+		{Key: "esc", Desc: "cancel"},
+	}
+
+	confirmKeys = []keyBinding{
+		{Key: "←/→", Desc: "select"},
+		{Key: "enter", Desc: "confirm"},
+		{Key: "esc", Desc: "back"},
+	}
+)
 
 var createKeys = createKeyMap{
 	Up: key.NewBinding(

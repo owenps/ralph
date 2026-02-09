@@ -9,22 +9,21 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/owenps/ralph/internal"
+	"github.com/owenps/jolteon/internal"
 )
 
 const deleteConfirmWindow = 2 * time.Second
 
-type filterType int
+type statusFilter int
 
 const (
-	filterAll filterType = iota
-	filterBug
-	filterFeature
-	filterRefactor
-	filterResearch
-	filterNotes
+	filterAll statusFilter = iota
+	filterPending
+	filterActive
+	filterDone
 )
 
 // taskItem wraps internal.Task to implement list.Item
@@ -36,10 +35,8 @@ func (i taskItem) Title() string       { return i.task.Description }
 func (i taskItem) Description() string { return string(i.task.Category) }
 func (i taskItem) FilterValue() string { return i.task.Description }
 
-// taskDelegate is a custom delegate for rendering tasks
-type taskDelegate struct {
-	selected *map[string]bool
-}
+// taskDelegate renders tasks with status badges and category badges.
+type taskDelegate struct{}
 
 func (d taskDelegate) Height() int                             { return 1 }
 func (d taskDelegate) Spacing() int                            { return 0 }
@@ -60,57 +57,77 @@ func (d taskDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		style = selectedMenuItemStyle
 	}
 
-	// Selection indicator
-	selectMark := "  "
-	if d.selected != nil && (*d.selected)[t.ID] {
-		selectMark = successStyle.Render("● ")
+	sBadge := statusBadge(t.Status)
+	statusStr := string(t.Status)
+	if len(statusStr) > 3 {
+		statusStr = statusStr[:3]
 	}
 
-	badge := categoryBadge(string(t.Category))
+	cBadge := categoryBadge(string(t.Category))
+	catStr := string(t.Category)
+	if len(catStr) > 3 {
+		catStr = catStr[:3]
+	}
+
 	width := m.Width() - 4
 	if width < 20 {
 		width = 20
 	}
-	desc := truncate(t.Description, width-12)
 
-	doneMarker := ""
-	if t.Done {
-		doneMarker = successStyle.Render("✔︎")
+	// Show GitHub issue number if from GitHub
+	ghTag := ""
+	if t.Source == internal.TaskSourceGitHub && t.IssueNumber > 0 {
+		ghTag = helpDescStyle.Render(fmt.Sprintf(" #%d", t.IssueNumber))
 	}
 
-	line := cursor + selectMark + badge.Render(string(t.Category)[:3]) + " " + style.Render(desc) + doneMarker
+	desc := truncate(t.Description, width-20)
+	line := cursor + sBadge.Render(statusStr) + " " + cBadge.Render(catStr) + " " + style.Render(desc) + ghTag
 	fmt.Fprint(w, line)
 }
 
-type viewModel struct {
+type dashboardModel struct {
 	tasks           []internal.Task
-	filter          filterType
+	filter          statusFilter
 	width           int
 	height          int
 	lastDeletePress time.Time
 	deleteConfirmID string
-	selected        map[string]bool
-	showRunWarn     bool
-	showSelectWarn  bool
 	help            help.Model
-	keys            viewKeyMap
+	keys            dashKeyMap
 	list            list.Model
+	sprite          SpriteModel
+	spinner         spinner.Model
+	syncing         bool
+	statusMsg       string
+	statusTimer     time.Time
 }
 
 type deleteTaskMsg struct{ ID string }
-type toggleTaskMsg struct{ ID string }
-type editTaskMsg struct{ Task internal.Task }
 type clearDeletePromptMsg struct{}
-type clearRunWarnMsg struct{}
-type clearSelectWarnMsg struct{}
-type runSelectedTasksMsg struct{ TaskIDs []string }
-type showLoopMsg struct{}
+type clearStatusMsg struct{}
 type openCreateMsg struct{}
-type openSettingsMsg struct{}
+type syncIssuesMsg struct{}
+type syncCompleteMsg struct {
+	Added int
+	Err   error
+}
+type startSessionMsg struct{ Task internal.Task }
+type sessionDoneMsg struct{ TaskID string }
+type createPRMsg struct{ Task internal.Task }
+type prCreatedMsg struct {
+	TaskID   string
+	PRNumber int
+	Err      error
+}
+type cleanWorktreeMsg struct{ Task internal.Task }
+type worktreeCleanedMsg struct {
+	TaskID string
+	Err    error
+}
 
-func newViewTasks(tasks []internal.Task) viewModel {
+func newDashboard(tasks []internal.Task) dashboardModel {
 	h := help.New()
-	h.ShowAll = true // Use full help view to avoid truncation/ellipsis
+	h.ShowAll = true
 	h.Styles.ShortKey = helpKeyStyle
 	h.Styles.ShortDesc = helpDescStyle
 	h.Styles.ShortSeparator = helpDescStyle
@@ -118,10 +135,7 @@ func newViewTasks(tasks []internal.Task) viewModel {
 	h.Styles.FullDesc = helpDescStyle
 	h.Styles.FullSeparator = helpDescStyle
 
-	selected := make(map[string]bool)
-
-	// Create list with custom delegate
-	delegate := taskDelegate{selected: &selected}
+	delegate := taskDelegate{}
 	items := tasksToItems(tasks)
 	l := list.New(items, delegate, 40, 10)
 	l.SetShowTitle(false)
@@ -131,13 +145,18 @@ func newViewTasks(tasks []internal.Task) viewModel {
 	l.SetShowPagination(false)
 	l.DisableQuitKeybindings()
 
-	m := viewModel{
-		tasks:    tasks,
-		filter:   filterAll,
-		selected: selected,
-		help:     h,
-		keys:     vKeys,
-		list:     l,
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(colorYellow)
+
+	m := dashboardModel{
+		tasks:   tasks,
+		filter:  filterAll,
+		help:    h,
+		keys:    dKeys,
+		list:    l,
+		sprite:  NewSprite(),
+		spinner: s,
 	}
 	m.applyFilter()
 	return m
@@ -151,12 +170,12 @@ func tasksToItems(tasks []internal.Task) []list.Item {
 	return items
 }
 
-func (m *viewModel) SetTasks(tasks []internal.Task) {
+func (m *dashboardModel) SetTasks(tasks []internal.Task) {
 	m.tasks = tasks
 	m.applyFilter()
 }
 
-func (m *viewModel) SetSize(width, height int) {
+func (m *dashboardModel) SetSize(width, height int) {
 	if width <= 0 {
 		width = 80
 	}
@@ -170,27 +189,22 @@ func (m *viewModel) SetSize(width, height int) {
 	m.list.SetHeight(height - 10)
 }
 
-func (m *viewModel) applyFilter() {
+func (m *dashboardModel) applyFilter() {
 	var filtered []internal.Task
 	switch m.filter {
 	case filterAll:
 		filtered = m.tasks
-	case filterBug:
-		filtered = filterByCategory(m.tasks, internal.CategoryBug)
-	case filterFeature:
-		filtered = filterByCategory(m.tasks, internal.CategoryFeature)
-	case filterRefactor:
-		filtered = filterByCategory(m.tasks, internal.CategoryRefactor)
-	case filterResearch:
-		filtered = filterByCategory(m.tasks, internal.CategoryResearch)
-	case filterNotes:
-		filtered = filterByCategory(m.tasks, internal.CategoryNotes)
+	case filterPending:
+		filtered = filterByStatus(m.tasks, internal.TaskStatusPending)
+	case filterActive:
+		filtered = filterByStatus(m.tasks, internal.TaskStatusActive)
+	case filterDone:
+		filtered = filterByStatus(m.tasks, internal.TaskStatusDone)
 	}
-
 	m.list.SetItems(tasksToItems(filtered))
 }
 
-func (m *viewModel) currentTask() *internal.Task {
+func (m *dashboardModel) currentTask() *internal.Task {
 	if item := m.list.SelectedItem(); item != nil {
 		if ti, ok := item.(taskItem); ok {
 			return &ti.task
@@ -199,17 +213,17 @@ func (m *viewModel) currentTask() *internal.Task {
 	return nil
 }
 
-func filterByCategory(tasks []internal.Task, cat internal.Category) []internal.Task {
+func filterByStatus(tasks []internal.Task, status internal.TaskStatus) []internal.Task {
 	var result []internal.Task
 	for _, t := range tasks {
-		if t.Category == cat {
+		if t.Status == status {
 			result = append(result, t)
 		}
 	}
 	return result
 }
 
-func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
+func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
@@ -220,43 +234,61 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 		m.deleteConfirmID = ""
 		return m, nil
 
-	case clearRunWarnMsg:
-		m.showRunWarn = false
+	case clearStatusMsg:
+		m.statusMsg = ""
 		return m, nil
 
-	case clearSelectWarnMsg:
-		m.showSelectWarn = false
+	case spriteTickMsg:
+		var cmd tea.Cmd
+		m.sprite, cmd = m.sprite.Update(msg)
+		return m, cmd
+
+	case spinner.TickMsg:
+		if m.syncing {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, vKeys.Back):
-			return m, func() tea.Msg { return backToMenuMsg{} }
-		case key.Matches(msg, vKeys.Escape):
-			// Clear delete prompt or selection
+		case key.Matches(msg, dKeys.Quit):
+			return m, tea.Quit
+		case key.Matches(msg, dKeys.Escape):
 			if !m.lastDeletePress.IsZero() {
 				m.lastDeletePress = time.Time{}
 				m.deleteConfirmID = ""
 				return m, nil
 			}
-			if len(m.selected) > 0 {
-				m.selected = make(map[string]bool)
-			}
 			return m, nil
-		case key.Matches(msg, vKeys.New):
+		case key.Matches(msg, dKeys.New):
 			return m, func() tea.Msg { return openCreateMsg{} }
-		case key.Matches(msg, vKeys.Tab):
-			m.filter = (m.filter + 1) % 6
+		case key.Matches(msg, dKeys.Tab):
+			m.filter = (m.filter + 1) % 4
 			m.applyFilter()
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
-			m.showRunWarn = false
-			m.showSelectWarn = false
-		case key.Matches(msg, vKeys.Toggle):
+		case key.Matches(msg, dKeys.Enter):
 			if task := m.currentTask(); task != nil {
-				return m, func() tea.Msg { return toggleTaskMsg{ID: task.ID} }
+				t := *task
+				return m, func() tea.Msg { return startSessionMsg{Task: t} }
 			}
-		case key.Matches(msg, vKeys.Delete):
+		case key.Matches(msg, dKeys.CreatePR):
+			if task := m.currentTask(); task != nil {
+				t := *task
+				return m, func() tea.Msg { return createPRMsg{Task: t} }
+			}
+		case key.Matches(msg, dKeys.CleanWorktree):
+			if task := m.currentTask(); task != nil {
+				t := *task
+				return m, func() tea.Msg { return cleanWorktreeMsg{Task: t} }
+			}
+		case key.Matches(msg, dKeys.Sync):
+			if !m.syncing {
+				return m, func() tea.Msg { return syncIssuesMsg{} }
+			}
+		case key.Matches(msg, dKeys.Delete):
 			if task := m.currentTask(); task != nil {
 				now := time.Now()
 				if !m.lastDeletePress.IsZero() && m.deleteConfirmID == task.ID && now.Sub(m.lastDeletePress) < deleteConfirmWindow {
@@ -270,35 +302,7 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 					return clearDeletePromptMsg{}
 				})
 			}
-		case key.Matches(msg, vKeys.Select):
-			if task := m.currentTask(); task != nil {
-				if task.Done {
-					m.showSelectWarn = true
-					return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
-						return clearSelectWarnMsg{}
-					})
-				}
-				if m.selected[task.ID] {
-					delete(m.selected, task.ID)
-				} else {
-					m.selected[task.ID] = true
-				}
-			}
-		case key.Matches(msg, vKeys.Run):
-			if len(m.selected) > 0 {
-				var taskIDs []string
-				for id := range m.selected {
-					taskIDs = append(taskIDs, id)
-				}
-				return m, func() tea.Msg { return runSelectedTasksMsg{TaskIDs: taskIDs} }
-			}
-			m.showRunWarn = true
-			return m, tea.Tick(deleteConfirmWindow, func(time.Time) tea.Msg {
-				return clearRunWarnMsg{}
-			})
-		case key.Matches(msg, vKeys.ShowLoop):
-			return m, func() tea.Msg { return showLoopMsg{} }
-		case key.Matches(msg, vKeys.Edit):
+		case key.Matches(msg, dKeys.Edit):
 			if task := m.currentTask(); task != nil {
 				t := *task
 				return m, func() tea.Msg { return editTaskMsg{Task: t} }
@@ -312,40 +316,49 @@ func (m viewModel) Update(msg tea.Msg) (viewModel, tea.Cmd) {
 
 	// Clear delete prompt on navigation
 	if _, ok := msg.(tea.KeyMsg); ok {
-		if key.Matches(msg.(tea.KeyMsg), vKeys.Up) || key.Matches(msg.(tea.KeyMsg), vKeys.Down) {
+		if key.Matches(msg.(tea.KeyMsg), dKeys.Up) || key.Matches(msg.(tea.KeyMsg), dKeys.Down) {
 			m.lastDeletePress = time.Time{}
 			m.deleteConfirmID = ""
-			m.showRunWarn = false
-			m.showSelectWarn = false
 		}
 	}
 
 	return m, cmd
 }
 
-func (m viewModel) View() string {
-	if len(m.list.Items()) == 0 {
-		s := m.renderTabs() + "\n\n"
-		s += m.renderEmpty()
+func (m dashboardModel) renderHeader() string {
+	titleBox := appTitle()
+	spriteView := m.sprite.View()
+	if m.width >= 80 && spriteView != "" {
+		return lipgloss.JoinHorizontal(lipgloss.Bottom, spriteView, "  ", titleBox)
+	}
+	return titleBox
+}
+
+func (m dashboardModel) View() string {
+	if len(m.list.Items()) == 0 && !m.syncing {
+		s := m.renderHeader() + "\n\n"
+		s += m.renderTabs() + "\n\n"
+		s += helpDescStyle.Render("No tasks yet.") + "\n\n"
+		s += renderHelp([]keyBinding{
+			{Key: "n", Desc: "new task"},
+			{Key: "S", Desc: "sync issues"},
+			{Key: "q", Desc: "quit"},
+		})
 		return s
 	}
 
-	s := appTitle() + "\n\n"
+	s := m.renderHeader() + "\n\n"
 	s += m.renderTabs()
 
-	if len(m.selected) > 0 {
-		s += "  " + successStyle.Render(fmt.Sprintf("%d selected", len(m.selected)))
-	}
-
-	// Warnings appear inline after tabs
+	// Inline warnings
 	if !m.lastDeletePress.IsZero() {
 		s += "  " + warnStyle.Render("Press d again to delete")
 	}
-	if m.showRunWarn {
-		s += "  " + warnStyle.Render("No tasks selected")
+	if m.syncing {
+		s += "  " + m.spinner.View() + " " + helpDescStyle.Render("Syncing issues...")
 	}
-	if m.showSelectWarn {
-		s += "  " + warnStyle.Render("Cannot select completed task")
+	if m.statusMsg != "" {
+		s += "  " + successStyle.Render(m.statusMsg)
 	}
 
 	s += "\n\n"
@@ -357,17 +370,15 @@ func (m viewModel) View() string {
 	return s
 }
 
-func (m viewModel) renderTabs() string {
+func (m dashboardModel) renderTabs() string {
 	tabs := []struct {
 		label  string
-		filter filterType
+		filter statusFilter
 	}{
 		{"all", filterAll},
-		{"bug", filterBug},
-		{"feature", filterFeature},
-		{"refactor", filterRefactor},
-		{"research", filterResearch},
-		{"notes", filterNotes},
+		{"pending", filterPending},
+		{"active", filterActive},
+		{"done", filterDone},
 	}
 
 	var tabViews []string
@@ -382,16 +393,7 @@ func (m viewModel) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, tabViews...)
 }
 
-func (m viewModel) renderEmpty() string {
-	s := helpDescStyle.Render("No tasks yet. Enjoy the peace.") + "\n\n"
-	s += renderHelp([]keyBinding{
-		{Key: "n", Desc: "new task"},
-		{Key: "q", Desc: "menu"},
-	})
-	return s
-}
-
-func (m viewModel) renderSplitView() string {
+func (m dashboardModel) renderSplitView() string {
 	totalWidth := m.width
 	if totalWidth < 60 {
 		totalWidth = 80
@@ -399,7 +401,6 @@ func (m viewModel) renderSplitView() string {
 	listWidth := totalWidth * 2 / 5
 	detailWidth := totalWidth - listWidth - 5
 
-	// Use list's built-in view
 	listPanel := borderStyle.
 		Width(listWidth).
 		Render(m.list.View())
@@ -412,7 +413,7 @@ func (m viewModel) renderSplitView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, " ", detailPanel)
 }
 
-func (m viewModel) renderTaskDetail(width int) string {
+func (m dashboardModel) renderTaskDetail(width int) string {
 	task := m.currentTask()
 	if task == nil {
 		return helpDescStyle.Render("No task selected")
@@ -421,16 +422,25 @@ func (m viewModel) renderTaskDetail(width int) string {
 	t := *task
 	var s strings.Builder
 
+	// Status badge
+	sBadge := statusBadge(t.Status)
+	s.WriteString(detailLabelStyle.Render("Status: "))
+	s.WriteString(sBadge.Render(string(t.Status)))
+	s.WriteString("\n\n")
+
+	// Category badge
 	badge := categoryBadge(string(t.Category))
 	s.WriteString(detailLabelStyle.Render("Category: "))
 	s.WriteString(badge.Render(string(t.Category)))
 	s.WriteString("\n\n")
 
+	// Description
 	s.WriteString(detailLabelStyle.Render("Description:"))
 	s.WriteString("\n")
 	s.WriteString(detailValueStyle.Render(wrapText(t.Description, width-4)))
 	s.WriteString("\n\n")
 
+	// Steps
 	if len(t.Steps) > 0 {
 		s.WriteString(detailLabelStyle.Render("Steps:"))
 		s.WriteString("\n")
@@ -438,19 +448,35 @@ func (m viewModel) renderTaskDetail(width int) string {
 			s.WriteString(detailValueStyle.Render(fmt.Sprintf("  %d. %s", i+1, step)))
 			s.WriteString("\n")
 		}
-	} else {
-		s.WriteString(detailLabelStyle.Render("Steps: "))
-		s.WriteString(helpDescStyle.Render("(none)"))
 		s.WriteString("\n")
 	}
 
-	s.WriteString("\n")
+	// Source info
+	if t.Source == internal.TaskSourceGitHub && t.IssueNumber > 0 {
+		s.WriteString(detailLabelStyle.Render("Issue: "))
+		s.WriteString(detailValueStyle.Render(fmt.Sprintf("#%d", t.IssueNumber)))
+		s.WriteString("\n")
+	}
 
-	s.WriteString(detailLabelStyle.Render("Status: "))
-	if t.Done {
-		s.WriteString(successStyle.Render("Complete"))
-	} else {
-		s.WriteString(helpDescStyle.Render("Incomplete"))
+	// Branch info
+	if t.Branch != "" {
+		s.WriteString(detailLabelStyle.Render("Branch: "))
+		s.WriteString(detailValueStyle.Render(t.Branch))
+		s.WriteString("\n")
+	}
+
+	// Worktree path
+	if t.WorktreePath != "" {
+		s.WriteString(detailLabelStyle.Render("Worktree: "))
+		s.WriteString(helpDescStyle.Render(t.WorktreePath))
+		s.WriteString("\n")
+	}
+
+	// PR number
+	if t.PRNumber > 0 {
+		s.WriteString(detailLabelStyle.Render("PR: "))
+		s.WriteString(detailValueStyle.Render(fmt.Sprintf("#%d", t.PRNumber)))
+		s.WriteString("\n")
 	}
 
 	return s.String()
@@ -492,33 +518,34 @@ func wrapText(s string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-type viewKeyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Tab      key.Binding
-	Escape   key.Binding
-	Back     key.Binding
-	Delete   key.Binding
-	Toggle   key.Binding
-	Select   key.Binding
-	Run      key.Binding
-	ShowLoop key.Binding
-	Edit     key.Binding
-	New      key.Binding
+// Key map for dashboard
+type dashKeyMap struct {
+	Up            key.Binding
+	Down          key.Binding
+	Tab           key.Binding
+	Escape        key.Binding
+	Quit          key.Binding
+	Enter         key.Binding
+	Delete        key.Binding
+	Edit          key.Binding
+	New           key.Binding
+	CreatePR      key.Binding
+	CleanWorktree key.Binding
+	Sync          key.Binding
 }
 
-func (k viewKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Toggle, k.Edit, k.New, k.Select, k.Run, k.ShowLoop, k.Delete, k.Tab, k.Escape, k.Back}
+func (k dashKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Enter, k.New, k.CreatePR, k.CleanWorktree, k.Sync, k.Edit, k.Delete, k.Tab, k.Quit}
 }
 
-func (k viewKeyMap) FullHelp() [][]key.Binding {
+func (k dashKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Toggle, k.Edit, k.New, k.Select, k.Run},
-		{k.ShowLoop, k.Delete, k.Tab, k.Escape, k.Back},
+		{k.Up, k.Enter, k.New, k.CreatePR, k.CleanWorktree},
+		{k.Sync, k.Edit, k.Delete, k.Tab, k.Quit},
 	}
 }
 
-var vKeys = viewKeyMap{
+var dKeys = dashKeyMap{
 	Up: key.NewBinding(
 		key.WithKeys("up", "k"),
 		key.WithHelp("j/k", "navigate"),
@@ -535,29 +562,17 @@ var vKeys = viewKeyMap{
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "clear"),
 	),
-	Back: key.NewBinding(
-		key.WithKeys("q"),
-		key.WithHelp("q", "menu"),
+	Quit: key.NewBinding(
+		key.WithKeys("q", "ctrl+c"),
+		key.WithHelp("q", "quit"),
+	),
+	Enter: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "start session"),
 	),
 	Delete: key.NewBinding(
 		key.WithKeys("d"),
 		key.WithHelp("d", "delete"),
-	),
-	Toggle: key.NewBinding(
-		key.WithKeys(" ", "enter"),
-		key.WithHelp("space", "toggle done"),
-	),
-	Select: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "select"),
-	),
-	Run: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "run"),
-	),
-	ShowLoop: key.NewBinding(
-		key.WithKeys("l"),
-		key.WithHelp("l", "show loop"),
 	),
 	Edit: key.NewBinding(
 		key.WithKeys("e"),
@@ -567,4 +582,18 @@ var vKeys = viewKeyMap{
 		key.WithKeys("n"),
 		key.WithHelp("n", "new task"),
 	),
+	CreatePR: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "create PR"),
+	),
+	CleanWorktree: key.NewBinding(
+		key.WithKeys("x"),
+		key.WithHelp("x", "clean worktree"),
+	),
+	Sync: key.NewBinding(
+		key.WithKeys("S"),
+		key.WithHelp("S", "sync issues"),
+	),
 }
+
+type editTaskMsg struct{ Task internal.Task }

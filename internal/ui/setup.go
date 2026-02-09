@@ -3,7 +3,7 @@ package ui
 import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/owenps/ralph/internal"
+	"github.com/owenps/jolteon/internal"
 )
 
 type setupStep int
@@ -87,12 +87,12 @@ func (m setupModel) View() string {
 func (m setupModel) viewWelcome() string {
 	var s string
 
-	s += inputLabelStyle.Render("Welcome to Ralph") + "\n\n"
-	s += helpDescStyle.Render("Chew through your backlog with Claude on autopilot.") + "\n\n"
+	s += inputLabelStyle.Render("Welcome to Jolteon") + "\n\n"
+	s += helpDescStyle.Render("A thin coordination layer above Claude Code.") + "\n\n"
 	s += detailLabelStyle.Render("How it works:") + "\n"
-	s += helpDescStyle.Render("  1. Run ") + codeStyle.Render("ralph init") + helpDescStyle.Render(" in any project to start tracking tasks") + "\n"
-	s += helpDescStyle.Render("  2. Data is stored in ") + codeStyle.Render(".ralph/") + "\n"
-	s += helpDescStyle.Render("  3. Add ") + codeStyle.Render(".ralph/") + helpDescStyle.Render(" to .gitignore (or commit it!)") + "\n\n"
+	s += helpDescStyle.Render("  1. Run ") + codeStyle.Render("jolteon init") + helpDescStyle.Render(" in any project to start tracking tasks") + "\n"
+	s += helpDescStyle.Render("  2. Data is stored in ") + codeStyle.Render(".jolteon/") + "\n"
+	s += helpDescStyle.Render("  3. Add ") + codeStyle.Render(".jolteon/") + helpDescStyle.Render(" to .gitignore (or commit it!)") + "\n\n"
 
 	s += renderHelp([]keyBinding{
 		{Key: "enter", Desc: "continue"},
@@ -103,8 +103,8 @@ func (m setupModel) viewWelcome() string {
 }
 
 func (m setupModel) viewDone() string {
-	s := successStyle.Render("✔︎") + " Ralph is ready to use\n\n"
-	s += helpDescStyle.Render("Run ") + codeStyle.Render("ralph init") + helpDescStyle.Render(" in a project directory to get started.") + "\n\n"
+	s := successStyle.Render("✔︎") + " Jolteon is ready to use\n\n"
+	s += helpDescStyle.Render("Run ") + codeStyle.Render("jolteon init") + helpDescStyle.Render(" in a project directory to get started.") + "\n\n"
 	s += renderHelp([]keyBinding{
 		{Key: "enter", Desc: "exit"},
 	})

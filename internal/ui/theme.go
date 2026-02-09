@@ -5,10 +5,11 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/owenps/jolteon/internal"
 )
 
 // Version can be set via ldflags at build time
-var Version = "v0.1.1"
+var Version = "v0.2.0"
 
 var (
 	colorYellow     = lipgloss.AdaptiveColor{Light: "#B8860B", Dark: "#FFD93D"}
@@ -24,6 +25,11 @@ var (
 	colorRefactor = lipgloss.AdaptiveColor{Light: "#8B6FC0", Dark: "#B9A8E0"}
 	colorResearch = lipgloss.AdaptiveColor{Light: "#5B80C0", Dark: "#8FB0E0"}
 	colorNotes    = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}
+	// Status colors
+	colorPending = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}
+	colorActive  = lipgloss.AdaptiveColor{Light: "#2E7D32", Dark: "#66BB6A"}
+	colorDone    = lipgloss.AdaptiveColor{Light: "#1565C0", Dark: "#42A5F5"}
+	colorFailed  = lipgloss.AdaptiveColor{Light: "#B05050", Dark: "#E88080"}
 )
 
 var (
@@ -96,6 +102,27 @@ var (
 			Background(colorNotes).
 			Padding(0, 1)
 
+	// Status badges
+	pendingBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorPending).
+			Padding(0, 1)
+
+	activeBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorActive).
+			Padding(0, 1)
+
+	doneBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorDone).
+			Padding(0, 1)
+
+	failedBadge = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(colorFailed).
+			Padding(0, 1)
+
 	inputLabelStyle = lipgloss.NewStyle().
 			Foreground(colorYellow).
 			Bold(true)
@@ -114,7 +141,7 @@ var (
 			Padding(1, 2)
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(colorGray).
+			Foreground(colorActive).
 			Bold(true)
 
 	detailLabelStyle = lipgloss.NewStyle().
@@ -151,6 +178,21 @@ func categoryBadge(category string) lipgloss.Style {
 	}
 }
 
+func statusBadge(status internal.TaskStatus) lipgloss.Style {
+	switch status {
+	case internal.TaskStatusPending:
+		return pendingBadge
+	case internal.TaskStatusActive:
+		return activeBadge
+	case internal.TaskStatusDone:
+		return doneBadge
+	case internal.TaskStatusFailed:
+		return failedBadge
+	default:
+		return pendingBadge
+	}
+}
+
 func appTitle() string {
 	bracketStyle := lipgloss.NewStyle().Foreground(colorDimYellow)
 	versionStyle := lipgloss.NewStyle().Foreground(colorGray)
@@ -169,10 +211,25 @@ func appTitle() string {
 
 	title := promptStyle.Render(">") + " " +
 		bracketStyle.Render("[") +
-		titleStyle.Render("ralph") +
+		titleStyle.Render("jolteon") +
 		bracketStyle.Render("]") + " " +
 		versionStyle.Render("("+Version+")") + "\n\n" +
 		labelStyle.Render("directory:") + " " + dir
 
 	return titleBoxStyle.Render(title)
+}
+
+// renderHelp renders a help bar from key bindings.
+type keyBinding struct {
+	Key  string
+	Desc string
+}
+
+func renderHelp(bindings []keyBinding) string {
+	var parts []string
+	for _, b := range bindings {
+		part := helpKeyStyle.Render(b.Key) + " " + helpDescStyle.Render(b.Desc)
+		parts = append(parts, part)
+	}
+	return helpStyle.Render(strings.Join(parts, "  "))
 }

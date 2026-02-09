@@ -1,13 +1,13 @@
 package ui
 
 import (
-	"context"
 	"fmt"
+	"os/exec"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/owenps/ralph/internal"
+	"github.com/owenps/jolteon/internal"
 )
 
 const quitConfirmWindow = 2 * time.Second
@@ -20,27 +20,17 @@ const (
 	stateInit appState = iota
 	stateSetup
 	stateNoProject
-	stateMenu
+	stateDashboard
 	stateCreate
-	stateView
-	stateSettings
-	stateLoopConfig
-	stateLoopRunning
 )
 
 type App struct {
 	state         appState
 	forceInit     bool
 	store         *internal.TaskStore
-	globalConfig  *internal.GlobalConfig
 	setupWizard   setupModel
-	menuView      menuModel
+	dashboard     dashboardModel
 	createWizard  createModel
-	viewTasks     viewModel
-	settingsView  settingsModel
-	loopConfig    loopConfigModel
-	loopView      loopViewModel
-	loopRunner    *internal.LoopRunner
 	lastQuitPress time.Time
 	err           error
 	warnErr       error
@@ -53,7 +43,7 @@ func NewApp() App {
 	return newAppWithOptions(false)
 }
 
-// NewAppForInit creates a new app for `ralph init` command
+// NewAppForInit creates a new app for `jolteon init` command
 func NewAppForInit() App {
 	return newAppWithOptions(true)
 }
@@ -77,7 +67,6 @@ type projectNotFoundMsg struct{}
 type projectInitializedMsg struct{}
 type tasksLoadedMsg struct{ tasks []internal.Task }
 type errMsg struct{ err error }
-type backToMenuMsg struct{}
 
 func (m App) checkGlobalConfig() tea.Msg {
 	if internal.GlobalConfigExists() {
@@ -125,17 +114,16 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle dismissable warning - any key returns to manage tasks
+		// Handle dismissable warning - any key returns to dashboard
 		if m.warnErr != nil {
 			m.warnErr = nil
-			m.viewTasks.SetSize(m.width, m.height)
-			m.state = stateView
+			m.dashboard.SetSize(m.width, m.height)
+			m.state = stateDashboard
 			return m, nil
 		}
 
-		// Only menu and noProject states quit on 'q'
-		// All other states handle 'q' themselves (typically as "back")
-		if m.state == stateMenu || m.state == stateNoProject {
+		// noProject state quits on 'q'
+		if m.state == stateNoProject {
 			if key.Matches(msg, appKeys.Quit) {
 				return m, tea.Quit
 			}
@@ -143,7 +131,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ctrl+c requires double-press confirmation in input-heavy states
 		if key.Matches(msg, appKeys.QuitCtrlC) {
-			if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
+			if m.state == stateSetup || m.state == stateCreate {
 				now := time.Now()
 				if !m.lastQuitPress.IsZero() && now.Sub(m.lastQuitPress) < quitConfirmWindow {
 					return m, tea.Quit
@@ -153,94 +141,64 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return clearQuitPromptMsg{}
 				})
 			}
-			// Other states quit immediately on ctrl+c
-			return m, tea.Quit
 		}
 
 		// Reset quit confirmation on any other key in input-heavy states
-		if m.state == stateSetup || m.state == stateCreate || m.state == stateSettings || m.state == stateLoopConfig || m.state == stateLoopRunning {
+		if m.state == stateSetup || m.state == stateCreate {
 			m.lastQuitPress = time.Time{}
 		}
 
 	case globalConfigFoundMsg:
-		// Global config exists
 		if m.forceInit {
-			// ralph init: initialize project
 			return m, m.initProject
 		}
-		// Normal launch: check for project
 		return m, m.checkProject
 
 	case globalConfigNotFoundMsg:
-		// No global config - show setup wizard
+		if m.forceInit {
+			// Auto-create global config and skip setup wizard
+			cfg := internal.DefaultGlobalConfig()
+			if err := internal.SaveGlobalConfig(cfg); err != nil {
+				return m, func() tea.Msg { return errMsg{err} }
+			}
+			return m, m.initProject
+		}
 		m.setupWizard = newSetupWizard()
 		m.state = stateSetup
 		return m, nil
 
 	case setupCompleteMsg:
-		// Setup finished
 		if m.forceInit {
-			// ralph init: initialize project
 			return m, m.initProject
 		}
-		// Normal launch after first-time setup: exit with instructions
 		return m, tea.Quit
 
 	case projectFoundMsg:
-		// Project exists - load tasks
 		return m, m.loadTasks
 
 	case projectNotFoundMsg:
-		// No project in current directory
 		m.state = stateNoProject
 		return m, nil
 
 	case projectInitializedMsg:
-		// Project just initialized - load tasks
 		return m, m.loadTasks
 
 	case tasksLoadedMsg:
 		tasksPath, _ := internal.TasksFilePath()
 		m.store = internal.NewTaskStore(tasksPath)
 		m.store.Load()
-		m.viewTasks = newViewTasks(msg.tasks)
-		m.viewTasks.SetSize(m.width, m.height)
-		// Load global config
-		cfg, err := internal.LoadGlobalConfig()
-		if err != nil {
-			cfg = internal.DefaultGlobalConfig()
-		}
-		m.globalConfig = cfg
-		m.menuView = newMenuModel()
-		m.state = stateMenu
-		return m, nil
+		m.dashboard = newDashboard(msg.tasks)
+		m.dashboard.SetSize(m.width, m.height)
+		m.state = stateDashboard
+		return m, m.dashboard.sprite.Tick()
 
 	case errMsg:
 		m.err = msg.err
 		return m, tea.Quit
 
-	case openTasksFromMenuMsg:
-		m.viewTasks.SetSize(m.width, m.height)
-		m.state = stateView
-		return m, nil
-
-	case openSettingsFromMenuMsg:
-		m.settingsView = newSettingsView(m.globalConfig)
-		m.state = stateSettings
-		return m, nil
-
-	case backToMenuMsg:
-		m.state = stateMenu
-		return m, nil
-
 	case openCreateMsg:
 		m.createWizard = newCreateWizard()
 		m.state = stateCreate
-		return m, nil
-
-	case openSettingsMsg:
-		m.settingsView = newSettingsView(m.globalConfig)
-		m.state = stateSettings
 		return m, nil
 
 	case saveTaskMsg:
@@ -253,14 +211,14 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, tea.Quit
 		}
-		m.viewTasks.SetTasks(m.store.All())
-		m.viewTasks.SetSize(m.width, m.height)
-		m.state = stateView
+		m.dashboard.SetTasks(m.store.All())
+		m.dashboard.SetSize(m.width, m.height)
+		m.state = stateDashboard
 		return m, nil
 
 	case cancelCreateMsg:
-		m.viewTasks.SetSize(m.width, m.height)
-		m.state = stateView
+		m.dashboard.SetSize(m.width, m.height)
+		m.state = stateDashboard
 		return m, nil
 
 	case deleteTaskMsg:
@@ -269,16 +227,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, tea.Quit
 		}
-		m.viewTasks.SetTasks(m.store.All())
-		return m, nil
-
-	case toggleTaskMsg:
-		m.store.ToggleDone(msg.ID)
-		if err := m.store.Save(); err != nil {
-			m.err = err
-			return m, tea.Quit
-		}
-		m.viewTasks.SetTasks(m.store.All())
+		m.dashboard.SetTasks(m.store.All())
 		return m, nil
 
 	case editTaskMsg:
@@ -286,85 +235,84 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = stateCreate
 		return m, nil
 
-	case backFromSettingsMsg:
-		m.state = stateMenu
-		return m, nil
+	case startSessionMsg:
+		return m, m.launchSession(msg.Task)
 
-	case settingsSavedMsg:
-		// Settings saved, stay in settings view
-		return m, nil
+	case execProcessMsg:
+		// Hand terminal to Claude via tea.ExecProcess
+		taskID := msg.taskID
+		return m, tea.ExecProcess(msg.cmd, func(err error) tea.Msg {
+			return sessionDoneMsg{TaskID: taskID}
+		})
 
-	case runSelectedTasksMsg:
-		// Check for uncommitted changes
-		if err := internal.CheckWorkingDirectoryClean(); err != nil {
-			m.warnErr = err
-			return m, nil
-		}
-		// Go to loop config
-		m.loopConfig = newLoopConfig(msg.TaskIDs, m.store.All(), m.globalConfig.Loop.DefaultMaxIterations)
-		m.state = stateLoopConfig
-		return m, nil
-
-	case cancelLoopConfigMsg:
-		m.viewTasks.SetSize(m.width, m.height)
-		m.state = stateView
-		return m, nil
-
-	case startLoopMsg:
-		runner, err := internal.NewLoopRunner(m.globalConfig, m.store.All(), msg.TaskIDs, m.store, msg.MaxIterations)
-		if err != nil {
-			m.warnErr = err
-			return m, nil
-		}
-		m.loopRunner = runner
-		m.loopView = newLoopView(runner)
-		m.state = stateLoopRunning
-
-		// Start the loop in background and init the loop view components
-		return m, tea.Batch(m.startLoop, m.loopView.Init())
-
-	case loopOutputMsg:
-		m.loopView, _ = m.loopView.Update(msg)
-		return m, nil
-
-	case loopCompleteMsg:
-		// Refresh tasks
+	case sessionDoneMsg:
+		// Refresh tasks after Claude session
 		m.store.Load()
-		m.viewTasks.SetTasks(m.store.All())
-		// Clear selections
-		m.viewTasks.selected = make(map[string]bool)
+		m.dashboard.SetTasks(m.store.All())
+		m.dashboard.SetSize(m.width, m.height)
+		m.state = stateDashboard
 		return m, nil
 
-	case hideLoopViewMsg:
-		m.viewTasks.SetSize(m.width, m.height)
-		m.state = stateView
-		return m, nil
+	case syncIssuesMsg:
+		m.dashboard.syncing = true
+		m.dashboard.sprite.SetAnim(SpriteWalk)
+		return m, tea.Batch(m.dashboard.spinner.Tick, m.doSync)
 
-	case showLoopMsg:
-		if m.loopRunner != nil {
-			state := m.loopRunner.GetState()
-			if state.Status == internal.RunStatusRunning {
-				m.state = stateLoopRunning
-			}
+	case syncCompleteMsg:
+		m.dashboard.syncing = false
+		m.dashboard.sprite.SetAnim(SpriteIdle)
+		if msg.Err != nil {
+			m.warnErr = msg.Err
+			return m, nil
 		}
-		return m, nil
+		m.store.Load()
+		m.dashboard.SetTasks(m.store.All())
+		m.dashboard.statusMsg = fmt.Sprintf("Synced %d issues", msg.Added)
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		})
+
+	case createPRMsg:
+		return m, m.doCreatePR(msg.Task)
+
+	case prCreatedMsg:
+		if msg.Err != nil {
+			m.warnErr = msg.Err
+			return m, nil
+		}
+		m.store.SetPRNumber(msg.TaskID, msg.PRNumber)
+		m.store.Save()
+		m.dashboard.SetTasks(m.store.All())
+		m.dashboard.statusMsg = fmt.Sprintf("PR #%d created", msg.PRNumber)
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		})
+
+	case cleanWorktreeMsg:
+		return m, m.doCleanWorktree(msg.Task)
+
+	case worktreeCleanedMsg:
+		if msg.Err != nil {
+			m.warnErr = msg.Err
+			return m, nil
+		}
+		m.store.SetWorktreePath(msg.TaskID, "")
+		m.store.SetBranch(msg.TaskID, "")
+		m.store.Save()
+		m.dashboard.SetTasks(m.store.All())
+		m.dashboard.statusMsg = "Worktree cleaned"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return clearStatusMsg{}
+		})
 	}
 
 	switch m.state {
 	case stateSetup:
 		return m.updateSetup(msg)
-	case stateMenu:
-		return m.updateMenu(msg)
 	case stateCreate:
 		return m.updateCreate(msg)
-	case stateView:
-		return m.updateView(msg)
-	case stateSettings:
-		return m.updateSettings(msg)
-	case stateLoopConfig:
-		return m.updateLoopConfig(msg)
-	case stateLoopRunning:
-		return m.updateLoopView(msg)
+	case stateDashboard:
+		return m.updateDashboard(msg)
 	}
 
 	return m, nil
@@ -376,69 +324,82 @@ func (m App) updateSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m App) updateMenu(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.menuView, cmd = m.menuView.Update(msg)
-	return m, cmd
-}
-
 func (m App) updateCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.createWizard, cmd = m.createWizard.Update(msg)
 	return m, cmd
 }
 
-func (m App) updateView(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m App) updateDashboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	m.viewTasks, cmd = m.viewTasks.Update(msg)
+	m.dashboard, cmd = m.dashboard.Update(msg)
 	return m, cmd
 }
 
-func (m App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.settingsView, cmd = m.settingsView.Update(msg)
-	return m, cmd
-}
-
-func (m App) updateLoopConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.loopConfig, cmd = m.loopConfig.Update(msg)
-	return m, cmd
-}
-
-func (m App) updateLoopView(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.loopView, cmd = m.loopView.Update(msg)
-	return m, cmd
-}
-
-func (m App) startLoop() tea.Msg {
-	outputChan := make(chan string, 100)
-
-	go func() {
-		ctx := context.Background()
-		err := m.loopRunner.Run(ctx, outputChan)
-		close(outputChan)
+func (m App) launchSession(task internal.Task) tea.Cmd {
+	return func() tea.Msg {
+		// Create worktree if needed
+		wtPath, branch, err := internal.WorktreeCreate(&task)
 		if err != nil {
-			// Error is already logged in progress
+			return errMsg{fmt.Errorf("failed to create worktree: %w", err)}
 		}
-	}()
 
-	// Start reading output in another goroutine
-	go func() {
-		for output := range outputChan {
-			// We can't send messages from here directly
-			// The loop view polls state instead
-			_ = output
+		// Update task in store
+		m.store.SetStatus(task.ID, internal.TaskStatusActive)
+		m.store.SetBranch(task.ID, branch)
+		m.store.SetWorktreePath(task.ID, wtPath)
+		m.store.Save()
+
+		// Build Claude command
+		resume := task.Status == internal.TaskStatusActive
+		cmd, err := internal.BuildClaudeCmd(wtPath, resume)
+		if err != nil {
+			return errMsg{err}
 		}
-	}()
 
-	return loopCompleteMsg{}
+		// Use tea.ExecProcess to hand terminal to Claude
+		return execProcessMsg{cmd: cmd, taskID: task.ID}
+	}
+}
+
+type execProcessMsg struct {
+	cmd    *exec.Cmd
+	taskID string
+}
+
+func (m App) doSync() tea.Msg {
+	added, err := internal.SyncIssues(m.store)
+	return syncCompleteMsg{Added: added, Err: err}
+}
+
+func (m App) doCreatePR(task internal.Task) tea.Cmd {
+	return func() tea.Msg {
+		if task.Branch == "" {
+			return prCreatedMsg{Err: fmt.Errorf("no branch — start a session first")}
+		}
+
+		// Push branch first
+		if err := internal.WorktreePush(task.Branch); err != nil {
+			return prCreatedMsg{Err: err}
+		}
+
+		prNum, err := internal.WorktreeCreatePR(&task, task.Branch)
+		return prCreatedMsg{TaskID: task.ID, PRNumber: prNum, Err: err}
+	}
+}
+
+func (m App) doCleanWorktree(task internal.Task) tea.Cmd {
+	return func() tea.Msg {
+		if err := internal.WorktreeRemove(task.ID); err != nil {
+			return worktreeCleanedMsg{TaskID: task.ID, Err: err}
+		}
+		return worktreeCleanedMsg{TaskID: task.ID}
+	}
 }
 
 func (m App) View() string {
 	if m.err != nil {
-		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPlease fix the issue and restart Ralph.", m.err))
+		return errorStyle.Render(fmt.Sprintf("Error: %v\n\nPlease fix the issue and restart Jolteon.", m.err))
 	}
 
 	if m.warnErr != nil {
@@ -457,22 +418,14 @@ func (m App) View() string {
 		return s
 	case stateNoProject:
 		return m.viewNoProject()
-	case stateMenu:
-		return m.menuView.View()
+	case stateDashboard:
+		return m.dashboard.View()
 	case stateCreate:
 		s := m.createWizard.View()
 		if !m.lastQuitPress.IsZero() {
 			s += "\n" + warnStyle.Render("Press ctrl+c again to quit")
 		}
 		return s
-	case stateView:
-		return m.viewTasks.View()
-	case stateSettings:
-		return m.settingsView.View()
-	case stateLoopConfig:
-		return m.loopConfig.View()
-	case stateLoopRunning:
-		return m.loopView.View()
 	}
 
 	return ""
@@ -480,8 +433,8 @@ func (m App) View() string {
 
 func (m App) viewNoProject() string {
 	s := appTitle() + "\n\n"
-	s += warnStyle.Render("No Ralph project found in this directory.") + "\n\n"
-	s += helpDescStyle.Render("Run ") + codeStyle.Render("ralph init") + helpDescStyle.Render(" to start tracking tasks here.") + "\n\n"
+	s += warnStyle.Render("No Jolteon project found in this directory.") + "\n\n"
+	s += helpDescStyle.Render("Run ") + codeStyle.Render("jolteon init") + helpDescStyle.Render(" to start tracking tasks here.") + "\n\n"
 	s += renderHelp([]keyBinding{
 		{Key: "q", Desc: "quit"},
 	})
@@ -491,9 +444,6 @@ func (m App) viewNoProject() string {
 type appKeyMap struct {
 	Quit      key.Binding
 	QuitCtrlC key.Binding
-	Enter     key.Binding
-	Left      key.Binding
-	Right     key.Binding
 }
 
 var appKeys = appKeyMap{
@@ -502,14 +452,5 @@ var appKeys = appKeyMap{
 	),
 	QuitCtrlC: key.NewBinding(
 		key.WithKeys("ctrl+c"),
-	),
-	Enter: key.NewBinding(
-		key.WithKeys("enter"),
-	),
-	Left: key.NewBinding(
-		key.WithKeys("left", "h"),
-	),
-	Right: key.NewBinding(
-		key.WithKeys("right", "l"),
 	),
 }

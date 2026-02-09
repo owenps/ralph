@@ -1,4 +1,4 @@
-module github.com/owenps/ralph
+module github.com/owenps/jolteon
 
 go 1.23
 

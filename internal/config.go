@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	GlobalConfigDir  = "ralph"
+	GlobalConfigDir  = "jolteon"
 	GlobalConfigFile = "config.yaml"
-	ProjectDir       = ".ralph"
+	ProjectDir       = ".jolteon"
 	TasksFile        = "tasks.yaml"
 )
 
@@ -20,37 +20,15 @@ var (
 	ErrProjectNotFound      = errors.New("project not initialized")
 )
 
-// LoopConfig stores settings for the Ralph loop execution
-type LoopConfig struct {
-	DefaultMaxIterations int `yaml:"default_max_iterations"`
-}
-
-// ClaudeConfig stores settings for Claude CLI invocation
-type ClaudeConfig struct {
-	Model          string   `yaml:"model,omitempty"`
-	AllowedTools   []string `yaml:"allowed_tools,omitempty"`
-	MaxTurns       int      `yaml:"max_turns,omitempty"`
-	TimeoutSeconds int      `yaml:"timeout_seconds,omitempty"`
-	SystemPrompt   string   `yaml:"system_prompt,omitempty"`
-}
-
-// GlobalConfig stores user preferences (in ~/.config/ralph/config.yaml)
+// GlobalConfig stores user preferences (in ~/.config/jolteon/config.yaml)
 type GlobalConfig struct {
-	Initialized bool         `yaml:"initialized"`
-	Loop        LoopConfig   `yaml:"loop"`
-	Claude      ClaudeConfig `yaml:"claude"`
+	Initialized bool `yaml:"initialized"`
 }
 
 // DefaultGlobalConfig returns a GlobalConfig with sensible defaults
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
 		Initialized: true,
-		Loop: LoopConfig{
-			DefaultMaxIterations: 10,
-		},
-		Claude: ClaudeConfig{
-			TimeoutSeconds: 300,
-		},
 	}
 }
 
@@ -63,7 +41,7 @@ func GlobalConfigPath() (string, error) {
 	return filepath.Join(configDir, GlobalConfigDir, GlobalConfigFile), nil
 }
 
-// LoadGlobalConfig loads the global config from ~/.config/ralph/config.yaml
+// LoadGlobalConfig loads the global config from ~/.config/jolteon/config.yaml
 func LoadGlobalConfig() (*GlobalConfig, error) {
 	path, err := GlobalConfigPath()
 	if err != nil {
@@ -78,24 +56,15 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 		return nil, err
 	}
 
-	// Start with defaults, then overlay loaded config
 	cfg := DefaultGlobalConfig()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
 
-	// Ensure defaults for zero values
-	if cfg.Loop.DefaultMaxIterations == 0 {
-		cfg.Loop.DefaultMaxIterations = 10
-	}
-	if cfg.Claude.TimeoutSeconds == 0 {
-		cfg.Claude.TimeoutSeconds = 300
-	}
-
 	return cfg, nil
 }
 
-// SaveGlobalConfig saves the global config to ~/.config/ralph/config.yaml
+// SaveGlobalConfig saves the global config to ~/.config/jolteon/config.yaml
 func SaveGlobalConfig(cfg *GlobalConfig) error {
 	path, err := GlobalConfigPath()
 	if err != nil {
@@ -125,7 +94,7 @@ func GlobalConfigExists() bool {
 	return err == nil
 }
 
-// ProjectPath returns the path to the .ralph directory in the current working directory
+// ProjectPath returns the path to the .jolteon directory in the current working directory
 func ProjectPath() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -143,7 +112,7 @@ func TasksFilePath() (string, error) {
 	return filepath.Join(projectPath, TasksFile), nil
 }
 
-// ProjectExists checks if the current directory has a .ralph project
+// ProjectExists checks if the current directory has a .jolteon project.
 func ProjectExists() bool {
 	path, err := ProjectPath()
 	if err != nil {
@@ -153,7 +122,7 @@ func ProjectExists() bool {
 	return err == nil && info.IsDir()
 }
 
-// InitProject creates the .ralph directory and empty tasks.yaml in the current directory
+// InitProject creates the .jolteon directory and empty tasks.yaml in the current directory
 func InitProject() error {
 	projectPath, err := ProjectPath()
 	if err != nil {
